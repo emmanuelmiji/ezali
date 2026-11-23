@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Ezali? · Courant, eau, routes, réseau</title>
+  <meta name="description" content="Courant, eau, routes et réseau en direct, commune par commune, signalés par les Kinois.">
+  <meta name="theme-color" content="#0A1530">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="flag" aria-hidden="true"><span></span><span></span><span></span></div>
+  <main id="app" aria-live="polite"></main>
+
+  <nav class="tabbar" id="tabbar" hidden>
+    <a href="#accueil" data-tab="accueil">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11 12 4l9 7v9H3z"/></svg>Accueil
+    </a>
+    <a href="#suivis" data-tab="suivis">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>Suivis
+    </a>
+    <a href="#signaler" class="fab" aria-label="Signaler">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+    </a>
+    <a href="#classement" data-tab="classement">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/></svg>Classement
+    </a>
+    <a href="#profil" data-tab="profil">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>Profil
+    </a>
+  </nav>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
