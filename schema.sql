@@ -2,8 +2,9 @@
 CREATE TABLE IF NOT EXISTS reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   commune TEXT NOT NULL,
-  service TEXT NOT NULL CHECK (service IN ('courant','eau','routes','reseau')),
+  service TEXT NOT NULL CHECK (service IN ('courant','eau','routes','reseau','securite')),
   state TEXT NOT NULL CHECK (state IN ('ok','instable','coupe')),
+  kind TEXT CHECK (kind IS NULL OR kind IN ('insecurite','accident','inondation','autre')),
   device TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
