@@ -2,8 +2,9 @@
 // Tout Kinshasa en une seule requête (moins de données, moins d'attente sur une connexion faible) :
 // - l'état de chaque service dans chaque commune,
 // - un résumé par service pour toute la ville,
-// - les derniers signalements (anonymes : commune, service, état, heure).
-import { COMMUNES, SERVICES, json } from "../../lib/shared.js";
+// - le détail par quartier,
+// - les derniers signalements (anonymes : commune, quartier, service, état, heure).
+import { COMMUNES, SERVICES, json, normName } from "../../lib/shared.js";
 
 // Durée pendant laquelle un signalement reste pertinent, par service.
 const WINDOW_MS = {
@@ -16,12 +17,31 @@ const WINDOW_MS = {
 const MAX_WINDOW = Math.max(...Object.values(WINDOW_MS));
 const HALF_LIFE_MS = 45 * 60e3;
 const RECENT_LIMIT = 15;
+// Un quartier proposé par les utilisateurs n'est affiché qu'après avoir été utilisé
+// par au moins 3 personnes différentes sur 30 jours (évite les fautes et les abus).
+const CUSTOM_MIN_PEOPLE = 3;
+const CUSTOM_PERIOD = 30 * 24 * 3600e3;
 
 export async function onRequestGet({ env }) {
   const now = Date.now();
-  const { results } = await env.DB.prepare(
-    "SELECT commune, service, state, kind, device, created_at FROM reports WHERE created_at > ? ORDER BY created_at ASC"
-  ).bind(now - MAX_WINDOW).all();
+  const [{ results }, { results: approved }] = await Promise.all([
+    env.DB.prepare(
+      "SELECT commune, quartier, quartier_custom, service, state, kind, device, created_at FROM reports WHERE created_at > ? ORDER BY created_at ASC"
+    ).bind(now - MAX_WINDOW).all(),
+    env.DB.prepare(
+      "SELECT commune, quartier, device FROM reports WHERE quartier_custom = 1 AND created_at > ?"
+    ).bind(now - CUSTOM_PERIOD).all(),
+  ]);
+
+  // Quartiers proposés par les utilisateurs et suffisamment confirmés.
+  const people = {};
+  for (const r of approved) (people[r.commune + "|" + normName(r.quartier)] ||= new Set()).add(r.device);
+  const visibleCustom = new Set(Object.keys(people).filter((k) => people[k].size >= CUSTOM_MIN_PEOPLE));
+  const quartierOf = (r) => {
+    if (!r.quartier) return null;
+    if (!r.quartier_custom) return r.quartier;
+    return visibleCustom.has(r.commune + "|" + normName(r.quartier)) ? r.quartier : null;
+  };
 
   // Regrouper par commune puis par service, en ne gardant que ce qui est encore pertinent.
   const groups = {};
@@ -38,6 +58,18 @@ export async function onRequestGet({ env }) {
     for (const service of SERVICES) {
       const reports = (groups[name] || {})[service] || [];
       const info = computeState(reports, now, WINDOW_MS[service]);
+
+      // Détail par quartier : état de chaque quartier signalé.
+      const byQ = {};
+      for (const r of reports) { const q = quartierOf(r); if (q) (byQ[q] ||= []).push(r); }
+      const quartiers = {};
+      const qstats = { ok: 0, instable: 0, coupe: 0 };
+      for (const [q, rows] of Object.entries(byQ)) {
+        const qi = computeState(rows, now, WINDOW_MS[service]);
+        quartiers[q] = qi;
+        qstats[qi.state] += 1;
+      }
+      if (Object.keys(quartiers).length) { info.quartiers = quartiers; info.qstats = qstats; }
       communes[name][service] = info;
       const sum = summary[service];
       sum.reports += reports.length;
@@ -50,7 +82,7 @@ export async function onRequestGet({ env }) {
     .filter((r) => SERVICES.includes(r.service) && now - r.created_at <= WINDOW_MS[r.service])
     .slice(-RECENT_LIMIT)
     .reverse()
-    .map((r) => ({ commune: r.commune, service: r.service, state: r.state, kind: r.kind, at: r.created_at }));
+    .map((r) => ({ commune: r.commune, quartier: quartierOf(r), service: r.service, state: r.state, kind: r.kind, at: r.created_at }));
 
   return json({ updated: now, windows: WINDOW_MS, summary, communes, recent });
 }

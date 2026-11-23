@@ -1,5 +1,6 @@
-// POST /api/reports  { commune, service, state, device, kind? }
-import { COMMUNES, SERVICES, STATES, KINDS, json } from "../../lib/shared.js";
+// POST /api/reports  { commune, service, state, device, kind?, quartier? }
+import { COMMUNES, SERVICES, STATES, KINDS, json, normName, cleanQuartier } from "../../lib/shared.js";
+import { QUARTIERS } from "../../lib/quartiers.js";
 
 const COOLDOWN_MS = 10 * 60 * 1000; // 1 signalement / 10 min / appareil / commune / service
 
@@ -19,6 +20,18 @@ export async function onRequestPost({ request, env }) {
 
   // On mélange l'identifiant de l'appareil et l'IP pour limiter les abus,
   // sans stocker l'IP en clair.
+  // Quartier (facultatif) : un nom de la liste officielle, ou un nom proposé par l'utilisateur.
+  let quartier = null, custom = 0;
+  if (typeof body.quartier === "string" && body.quartier.trim()) {
+    const known = (QUARTIERS[commune] || []).find((q) => normName(q) === normName(body.quartier));
+    if (known) quartier = known;
+    else {
+      quartier = cleanQuartier(body.quartier);
+      if (!quartier) return json({ error: "Nom de quartier invalide." }, 400);
+      custom = 1;
+    }
+  }
+
   const ip = request.headers.get("CF-Connecting-IP") || "0";
   const deviceKey = await sha256(`${device}|${ip}`);
   const now = Date.now();
@@ -32,8 +45,8 @@ export async function onRequestPost({ request, env }) {
   }
 
   await env.DB.prepare(
-    "INSERT INTO reports (commune, service, state, kind, device, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-  ).bind(commune, service, state, kind, deviceKey, now).run();
+    "INSERT INTO reports (commune, service, state, kind, device, created_at, quartier, quartier_custom) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  ).bind(commune, service, state, kind, deviceKey, now, quartier, custom).run();
 
   return json({ ok: true });
 }
