@@ -13,6 +13,7 @@ const ICONS = {
   eau: '<path d="M12 3s6 7 6 11a6 6 0 0 1-12 0c0-4 6-11 6-11z"/>',
   routes: '<path d="M4 20 9 4M20 20 15 4M12 6v2M12 11v2M12 16v2"/>',
   reseau: '<path d="M4 20h2v-4H4zM9 20h2v-8H9zM14 20h2V8h-2zM19 20h2V4h-2z"/>',
+  securite: '<path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/>',
   ok: '<path d="M5 12l5 5 9-10"/>',
   coupe: '<path d="M6 6l12 12M18 6 6 18"/>',
   instable: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
@@ -23,7 +24,10 @@ const SERVICES = {
   eau: { name: "Mai · Eau", short: "Mai", states: { ok: "Ezali · L'eau coule", instable: "Faible", coupe: "Pas d'eau" } },
   routes: { name: "Nzela · Routes", short: "Nzela", states: { ok: "Fluide", instable: "Ralenti", coupe: "Bloqué" } },
   reseau: { name: "Réseau", short: "Réseau", states: { ok: "Normal", instable: "Faible", coupe: "Pas de réseau" } },
+  securite: { name: "Sécurité", short: "Sécurité", states: { ok: "Calme", instable: "Prudence", coupe: "Danger" } },
 };
+
+const KINDS = { insecurite: "Insécurité", accident: "Accident", inondation: "Inondation", autre: "Autre" };
 
 const STATE_SHORT = { ok: "OK", instable: "Instable", coupe: "Coupé", inconnu: "Pas d'info" };
 const STATE_COLOR = { ok: "var(--ok)", instable: "var(--mid)", coupe: "var(--bad)", inconnu: "var(--none)" };
@@ -50,8 +54,11 @@ const state = {
   commune: store.get("commune", null),
   follows: store.get("follows", []),
   service: "courant",
-  report: { service: "courant", state: null },
+  report: { service: "courant", state: null, kind: null },
   rankTab: "top",
+  homeView: store.get("homeView", "carte"),
+  mapZoom: "centre",
+  mapSel: null,
   cache: {},
 };
 
@@ -83,6 +90,60 @@ function toast(msg) {
   toastTimer = setTimeout(() => (el.hidden = true), 3200);
 }
 
+let shapesPromise = null;
+function getShapes() {
+  if (!shapesPromise) {
+    shapesPromise = fetch("/communes.json").then((r) => { if (!r.ok) throw new Error("shapes"); return r.json(); })
+      .catch((e) => { shapesPromise = null; throw e; });
+  }
+  return shapesPromise;
+}
+
+// Vues de la carte (unités : 1/10 000 de degré ; x = est, y = sud)
+const MAP_VIEWS = {
+  centre: [1250, 2960, 2000, 1850],
+  ville: [150, -900, 14350, 11350],
+};
+// Petits décalages d'étiquettes pour éviter qu'elles se chevauchent au centre-ville
+const LABEL_SHORT = { Bandalungwa: "Bandal" };
+// Les plus petites communes n'ont pas d'étiquette au centre-ville (on les touche pour voir leur nom)
+const NO_LABEL_CENTRE = ["Kinshasa", "Barumbu", "Lingwala", "Kasa-Vubu", "Ngiri-Ngiri", "Bumbu", "Makala", "Ngaba"];
+const LABELS_VILLE = ["Maluku", "Nsele", "Mont-Ngafula"];
+
+function mapSvg(shapes, communes) {
+  const [vx, vy, vw, vh] = MAP_VIEWS[state.mapZoom];
+  const byName = Object.fromEntries(communes.map((c) => [c.commune, c]));
+  const sel = state.mapSel || state.commune;
+  const fs = vw / (state.mapZoom === "centre" ? 32 : 26);
+  const entries = Object.entries(shapes).sort((a, b) => (a[0] === sel) - (b[0] === sel)); // la commune choisie au-dessus
+  const paths = entries.map(([name, s]) => {
+    const st = (byName[name] || {}).state || "inconnu";
+    const w = name === sel ? vw / 80 : vw / 260;
+    return `<path d="${s.d}" class="m-${st}${name === sel ? " m-sel" : ""}" data-c="${esc(name)}" style="stroke-width:${w}"><title>${esc(name)}</title></path>`;
+  }).join("");
+  const labels = Object.entries(shapes).map(([name, s]) => {
+    if (state.mapZoom === "ville" ? !LABELS_VILLE.includes(name) : NO_LABEL_CENTRE.includes(name)) return "";
+    const label = LABEL_SHORT[name] || name;
+    const half = label.length * fs * 0.32 + fs * 0.4; // demi-largeur approximative du texte
+    const x = Math.min(Math.max(s.c[0], vx + half), vx + vw - half);
+    const y = Math.min(Math.max(s.c[1], vy + fs * 1.6), vy + vh - fs * 2.4);
+    const st = (byName[name] || {}).state || "inconnu";
+    return `<text x="${x}" y="${y}" class="t-${st}" style="font-size:${fs}px">${esc(label)}</text>`;
+  }).join("");
+  return `<svg class="map" viewBox="${vx} ${vy} ${vw} ${vh}" role="img" aria-label="Carte des communes de Kinshasa">${paths}${labels}</svg>`;
+}
+
+function mapInfo(communes) {
+  const name = state.mapSel || state.commune;
+  const c = communes.find((x) => x.commune === name) || { state: "inconnu" };
+  const s = SERVICES[state.service];
+  const detail = c.state === "inconnu"
+    ? "Pas de signalement ces 3 dernières heures"
+    : `${esc(s.states[c.state])}${c.kind ? " (" + esc(KINDS[c.kind]) + ")" : ""} · depuis ${hourText(c.since)} · ${c.count} signalement${c.count > 1 ? "s" : ""}`;
+  return `<i class="dot" style="background:${STATE_COLOR[c.state]}"></i>
+    <div class="grow"><div class="name">${esc(name)}${name === state.commune ? " · chez toi" : ""}</div><div class="small">${detail}</div></div>`;
+}
+
 async function getStatus(service, fresh = false) {
   const c = state.cache[service];
   if (!fresh && c && Date.now() - c.at < 60000) return c.data;
@@ -93,11 +154,11 @@ async function getStatus(service, fresh = false) {
   return data;
 }
 
-async function sendReport(commune, service, value) {
+async function sendReport(commune, service, value, kind = null) {
   const res = await fetch("/api/reports", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ commune, service, state: value, device: deviceId() }),
+    body: JSON.stringify({ commune, service, state: value, kind, device: deviceId() }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || "Envoi impossible. Réessaie.");
@@ -147,19 +208,34 @@ async function viewHome() {
       ${Object.keys(SERVICES).map((k) => `
         <button class="service" data-svc="${k}" aria-pressed="${k === svc}">${icon(k)}${SERVICES[k].short}</button>`).join("")}
     </div>
-    <div class="label">Toutes les communes</div>
-    <div class="grid" id="grid"></div>
+    <div class="seg" style="margin-top:16px">
+      <button data-view="carte" aria-pressed="${state.homeView === "carte"}">Carte</button>
+      <button data-view="liste" aria-pressed="${state.homeView === "liste"}">Liste</button>
+    </div>
+    ${state.homeView === "carte" ? `
+      <div class="mapbox card" style="margin-top:10px;padding:0">
+        <div id="mapwrap"><div class="empty">Chargement de la carte…</div></div>
+        <button class="zoom" id="zoom">${state.mapZoom === "centre" ? "Toute la ville" : "Centre-ville"}</button>
+      </div>
+      <div class="card list" style="margin-top:8px"><div class="item" id="mapinfo"></div></div>
+      <p class="small" style="margin-top:8px">Touche une commune pour voir son état. Contours : © OpenStreetMap.</p>` : `
+      <div class="grid" id="grid" style="margin-top:10px"></div>`}
     <div class="legend">
       <span><i style="background:var(--ok)"></i>OK</span>
       <span><i style="background:var(--mid)"></i>Instable</span>
       <span><i style="background:var(--bad)"></i>Coupé</span>
       <span><i style="background:var(--none)"></i>Pas d'info</span>
     </div>
-    <p class="small" style="margin-top:12px">Basé sur les signalements des 3 dernières heures.</p>`;
+    <p class="small" style="margin-top:12px">Basé sur les signalements des 3 dernières heures.${svc === "securite" ? " Ezali? ne remplace pas les secours : en cas d'urgence, appelle-les directement." : ""}</p>`;
 
   $app.querySelectorAll("[data-svc]").forEach((b) =>
     b.addEventListener("click", () => { state.service = b.dataset.svc; viewHome(); })
   );
+  $app.querySelectorAll("[data-view]").forEach((b) =>
+    b.addEventListener("click", () => { state.homeView = b.dataset.view; store.set("homeView", state.homeView); viewHome(); })
+  );
+  const zoom = document.getElementById("zoom");
+  if (zoom) zoom.addEventListener("click", () => { state.mapZoom = state.mapZoom === "centre" ? "ville" : "centre"; viewHome(); });
   document.getElementById("refresh").addEventListener("click", () => loadHome(true));
   loadHome(false);
 }
@@ -192,7 +268,7 @@ async function loadHome(fresh) {
     const other = mine.state === "ok" ? "coupe" : "ok";
     hero.innerHTML = `
       <div class="pill" style="color:${color}"><i style="background:${color}"></i>${esc(s.name)} · ${esc(STATE_SHORT[mine.state])}</div>
-      <div class="big">${esc(s.states[mine.state])}</div>
+      <div class="big">${esc(s.states[mine.state])}${mine.kind ? ` · ${esc(KINDS[mine.kind])}` : ""}</div>
       <div class="small">Depuis ${hourText(mine.since)} · dernier signalement ${agoText(mine.last)}</div>
       <div class="small">${mine.count} signalement${mine.count > 1 ? "s" : ""} le confirme${mine.count > 1 ? "nt" : ""}</div>
       <div class="row">
@@ -207,6 +283,23 @@ async function loadHome(fresh) {
       catch (e) { toast(e.message); b.disabled = false; }
     })
   );
+
+  if (state.homeView === "carte") {
+    const wrap = document.getElementById("mapwrap");
+    let shapes;
+    try { shapes = await getShapes(); }
+    catch { wrap.innerHTML = `<div class="empty">Carte indisponible. Passe en mode Liste.</div>`; return; }
+    if (!document.getElementById("mapwrap")) return;
+    const draw = () => {
+      wrap.innerHTML = mapSvg(shapes, data.communes);
+      document.getElementById("mapinfo").innerHTML = mapInfo(data.communes);
+      wrap.querySelectorAll("path[data-c]").forEach((p) =>
+        p.addEventListener("click", () => { state.mapSel = p.dataset.c; draw(); })
+      );
+    };
+    draw();
+    return;
+  }
 
   document.getElementById("grid").innerHTML = data.communes
     .map((c) => `
@@ -235,24 +328,34 @@ function viewReport() {
       ${["ok", "coupe", "instable"].map((k) => `
         <button class="choice s-${k}" data-state="${k}" aria-pressed="${r.state === k}">${icon(k)}${esc(s.states[k])}</button>`).join("")}
     </div>
+    ${r.service === "securite" && r.state && r.state !== "ok" ? `
+      <div class="label">Que se passe-t-il ? (facultatif)</div>
+      <div class="kinds">
+        ${Object.entries(KINDS).map(([k, v]) => `<button class="kind" data-kind="${k}" aria-pressed="${r.kind === k}">${esc(v)}</button>`).join("")}
+      </div>
+      <p class="small" style="margin-top:8px">Pas de nom, pas d'adresse : seulement la commune.</p>` : ""}
     <div style="margin-top:28px">
       <button class="btn primary block" id="send" ${r.state ? "" : "disabled"}>Envoyer</button>
     </div>
     <p class="small" style="text-align:center;margin-top:10px">Un signalement toutes les 10 minutes par service.</p>`;
 
   $app.querySelectorAll("[data-svc]").forEach((b) =>
-    b.addEventListener("click", () => { r.service = b.dataset.svc; r.state = null; viewReport(); })
+    b.addEventListener("click", () => { r.service = b.dataset.svc; r.state = null; r.kind = null; viewReport(); })
   );
   $app.querySelectorAll("[data-state]").forEach((b) =>
-    b.addEventListener("click", () => { r.state = b.dataset.state; viewReport(); })
+    b.addEventListener("click", () => { r.state = b.dataset.state; if (r.state === "ok") r.kind = null; viewReport(); })
+  );
+  $app.querySelectorAll("[data-kind]").forEach((b) =>
+    b.addEventListener("click", () => { r.kind = r.kind === b.dataset.kind ? null : b.dataset.kind; viewReport(); })
   );
   document.getElementById("send").addEventListener("click", async (e) => {
     e.target.disabled = true;
     try {
-      await sendReport(state.commune, r.service, r.state);
+      await sendReport(state.commune, r.service, r.state, r.kind);
       toast("Melesi ! Ton signalement est envoyé.");
       state.service = r.service;
       r.state = null;
+      r.kind = null;
       location.hash = "#accueil";
     } catch (err) {
       toast(err.message);
