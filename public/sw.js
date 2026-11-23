@@ -1,5 +1,5 @@
 // Service worker : l'app s'ouvre même sans réseau. Les données (/api) viennent toujours du réseau.
-const CACHE = "ezali-v7";
+const CACHE = "ezali-v8";
 const SHELL = ["/", "/index.html", "/style.css", "/app.js", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/communes.json", "/quartiers.json"];
 
 self.addEventListener("install", (e) => {

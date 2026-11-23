@@ -4,7 +4,7 @@
    Pas de compte, pas de bibliothèque : tout tient dans ce fichier.
    ========================================================= */
 
-const VERSION = "1.4.1";
+const VERSION = "1.5.0";
 const TAGLINE = "Kinshasa en direct";
 
 // ---------- Données fixes ----------
@@ -40,6 +40,8 @@ const ICON = {
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
   bolt: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
+  home: '<path d="M3 11 12 4l9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>',
+  briefcase: '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M3 13h18"/>',
 };
 
 const SERVICES = {
@@ -90,11 +92,13 @@ const state = {
   trips: store.get("trips", []),                // trajets habituels
   roadPrompt: store.get("roadPrompt", false),   // proposer un signalement quand on roule
   toured: store.get("toured", false),           // visite guidée vue
+  places: store.get("places", { home: null, work: null }), // lieux enregistrés (copie de ce que le serveur connaît)
+  followups: store.get("followups", []),        // relances « c'est revenu ? »
   tipsDone: store.get("tipsDone", []),          // astuces déjà lues
   follows: loadFollows(),
   theme: store.get("theme", "auto"),
   filter: "tout",
-  report: { commune: null, quartier: undefined, service: "courant", state: null, kind: null, sent: false },
+  report: { where: "home", here: null, service: "courant", state: null, kind: null, sent: false },
   rankPeriod: "week",
   overview: null,      // dernières données reçues
   overviewAt: 0,       // heure de réception
@@ -165,11 +169,48 @@ async function getOverview(fresh = false) {
   }
 }
 
-async function sendReport({ commune, quartier, service, state: value, kind }) {
+// ---------- Lieux enregistrés (domicile, travail) ----------
+const PLACE_ONLY = ["courant", "eau"]; // signalables seulement chez soi ou au travail
+const placeLabel = (p) => (p ? (p.quartier ? `${p.quartier}, ${p.commune}` : p.commune) : "");
+const dateFr = (ts) => new Date(ts).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
+
+async function savePlace(slot, commune, quartier) {
+  const res = await fetch("/api/places", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ device: deviceId(), slot, commune, quartier: quartier || null }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 429 && data.code === "locked") {
+    throw new Error(`Tu as déjà changé ce lieu récemment. Prochain changement possible ${dateFr(data.lockedUntil)}.`);
+  }
+  if (!res.ok) throw new Error(data.error || "Enregistrement impossible. Vérifie ta connexion.");
+  state.places[slot] = { commune: data.commune, quartier: data.quartier, lockedUntil: data.lockedUntil };
+  store.set("places", state.places);
+  return state.places[slot];
+}
+
+// Au démarrage : on récupère les lieux connus du serveur ; un domicile choisi avant cette version est envoyé une fois.
+async function syncPlaces() {
+  if (!state.commune || !state.quartierSet) return;
+  try {
+    const res = await fetch(`/api/places?device=${encodeURIComponent(deviceId())}`, { cache: "no-store" });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.home) await savePlace("home", state.commune, state.quartier);
+    else state.places.home = data.home;
+    state.places.work = data.work;
+    store.set("places", state.places);
+  } catch { /* hors ligne : on garde la copie locale */ }
+}
+
+async function sendReport({ commune, quartier, service, state: value, kind, place }) {
   const res = await fetch("/api/reports", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ commune, quartier: quartier || null, service, state: value, kind, device: deviceId() }),
+    body: JSON.stringify(place
+      ? { place, service, state: value, kind, device: deviceId() }
+      : { commune, quartier: quartier || null, service, state: value, kind, device: deviceId() }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || "Envoi impossible. Vérifie ta connexion et réessaie.");
@@ -484,7 +525,21 @@ function viewChooseQuartier() {
       <p class="caption" style="margin:8px 0 14px">Une commune est grande : le courant peut être là dans un quartier et coupé dans un autre. Ton quartier rend les informations plus précises.</p>
       <div id="picker"></div>
     </div>`;
-  quartierPicker(document.getElementById("picker"), state.commune, state.quartier, (q) => {
+  quartierPicker(document.getElementById("picker"), state.commune, state.quartier, async (q) => {
+    try {
+      const saved = await savePlace("home", state.commune, q);
+      state.commune = saved.commune; store.set("commune", saved.commune);
+      q = saved.quartier;
+    } catch (err) {
+      // Changement refusé (moins d'une semaine) : on garde le domicile connu du serveur.
+      if (state.places.home) {
+        toast(err.message);
+        state.commune = state.places.home.commune; store.set("commune", state.commune);
+        q = state.places.home.quartier;
+      } else if (!navigator.onLine) {
+        toast("Hors ligne : ton domicile sera enregistré dès que tu auras du réseau.");
+      } else { toast(err.message); return; }
+    }
     state.quartier = q;
     state.quartierSet = true;
     store.set("quartier", q);
@@ -493,6 +548,41 @@ function viewChooseQuartier() {
     state.pendingOpen = null;
     if (location.hash === "#accueil") route();
   });
+}
+
+// ---------- Lieu de travail ----------
+function viewWorkPlace(step) {
+  const cur = state.places.work;
+  if (!step || !step.commune) {
+    $app.innerHTML = `
+      <div class="view">
+        <div class="top"><a class="icon-btn" href="#profil" aria-label="Retour">${ico("back")}</a><span></span></div>
+        <div class="overline" style="margin-top:14px">Lieu de travail · étape 1 sur 2</div>
+        <h1 class="h1" style="margin-top:6px">Tu travailles dans quelle commune ?</h1>
+        <p class="caption" style="margin:8px 0 16px">Bureau, école, marché, boutique… Tu pourras y signaler le courant et l'eau. Ce lieu reste anonyme et peut changer une fois par semaine.</p>
+        ${cur && cur.lockedUntil > Date.now() ? `<div class="notice">${ico("info")}<span>Actuellement : ${esc(placeLabel(cur))}. Prochain changement possible ${esc(dateFr(cur.lockedUntil))} (correction possible 30 min après l'enregistrement).</span></div>` : ""}
+        <div class="cats" style="grid-template-columns:repeat(3,minmax(0,1fr))">
+          ${COMMUNES.map((c) => `<button class="card pad" data-pick="${esc(c)}" style="font-weight:700;font-size:14px;color:var(--text);text-align:left;padding:14px 12px">${esc(c)}</button>`).join("")}
+        </div>
+      </div>`;
+    $app.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => viewWorkPlace({ commune: b.dataset.pick })));
+    return;
+  }
+  $app.innerHTML = `
+    <div class="view">
+      <div class="top"><button class="icon-btn" id="wback" aria-label="Retour">${ico("back")}</button><span></span></div>
+      <div class="overline" style="margin-top:14px">Lieu de travail · étape 2 sur 2</div>
+      <h1 class="h1" style="margin-top:6px">Quel quartier, à ${esc(step.commune)} ?</h1>
+      <div id="picker" style="margin-top:14px"></div>
+    </div>`;
+  document.getElementById("wback").addEventListener("click", () => viewWorkPlace());
+  quartierPicker(document.getElementById("picker"), step.commune, null, async (q) => {
+    try {
+      const saved = await savePlace("work", step.commune, q);
+      toast(`Lieu de travail enregistré : ${placeLabel(saved)}.`);
+      location.hash = "#profil";
+    } catch (err) { toast(err.message); }
+  }, { skipLabel: "Je ne connais pas le quartier" });
 }
 
 // ---------- Accueil ----------
@@ -519,7 +609,7 @@ function viewHome() {
         </div>
       </div>
       <div id="home-notice" style="margin-top:14px"></div>
-      ${tipCard()}
+      ${followups.card() || tipCard()}
 
       <section class="section">
         <div class="section-head" style="margin-bottom:2px">
@@ -579,6 +669,7 @@ function viewHome() {
     map.paint();
   }));
   document.getElementById("refresh").addEventListener("click", (e) => { e.currentTarget.classList.add("spin"); loadHome(true); });
+  followups.bind();
   $app.querySelectorAll("[data-tipdone]").forEach((b) => b.addEventListener("click", () => {
     state.tipsDone.push(b.dataset.tipdone); store.set("tipsDone", state.tipsDone);
     const tip = document.getElementById("tip"); if (tip) tip.remove();
@@ -964,7 +1055,7 @@ function openSheet(name) {
       }).join("")}
     </div>
     <div class="row" style="margin-top:14px">
-      <a class="btn btn-primary" href="#signaler" data-report>${ico("plus")}Signaler ici</a>
+      <a class="btn btn-primary" href="#signaler" data-report>${ico("plus")}Signaler</a>
       <button class="btn btn-secondary" data-follow>${ico("star")}${followed ? "Suivie" : "Suivre"}</button>
       <button class="btn btn-secondary" data-share aria-label="Partager">${ico("share")}</button>
     </div>
@@ -978,7 +1069,7 @@ function openSheet(name) {
   scrim.addEventListener("click", close);
   sheet.querySelector("[data-close]").addEventListener("click", close);
   sheet.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
-  sheet.querySelector("[data-report]").addEventListener("click", () => { state.report.commune = name; state.report.quartier = undefined; closeSheet(true); });
+  sheet.querySelector("[data-report]").addEventListener("click", () => { closeSheet(true); });
   sheet.querySelector("[data-follow]").addEventListener("click", (e) => {
     if (state.follows.some((f) => f.name === name)) {
       if (name === state.commune) return toast("C'est ta commune : elle reste dans tes suivis.");
@@ -1042,24 +1133,36 @@ async function shareCommune(name, c) {
 // ---------- Signaler ----------
 function viewReport() {
   const r = state.report;
-  r.commune ||= state.commune;
-  // Quartier par défaut : celui du domicile si c'est la même commune.
-  if (r.quartier === undefined) r.quartier = r.commune === state.commune ? state.quartier : null;
+  const home = state.places.home || (state.commune ? { commune: state.commune, quartier: state.quartier } : null);
+  const work = state.places.work;
+  const placeOnly = PLACE_ONLY.includes(r.service);
+  if (placeOnly && r.where === "here") r.where = "home";
+  if (r.where === "work" && !work) r.where = "home";
+  const target = r.where === "home" ? home : r.where === "work" ? work : r.here;
+  const whereText = r.where === "here" ? (r.here ? placeLabel(r.here) : "") : placeLabel(target);
+
   if (r.sent) {
     $app.innerHTML = `
       <div class="view done">
         <div class="check">${ico("check")}</div>
         <h1 class="h1">Melesi !</h1>
-        <p class="caption" style="margin:8px 0 22px">Ton signalement pour ${r.quartier ? esc(r.quartier) + ", " : ""}${esc(r.commune)} est envoyé à ${hourText(Date.now())}. Il aide tous les habitants.</p>
+        <p class="caption" style="margin:8px 0 22px">Ton signalement pour ${esc(r.sentLabel || "")} est envoyé à ${hourText(Date.now())}. Il aide tous les habitants.</p>
+        ${r.sentFollowup ? `<div class="card pad" style="text-align:left;margin-bottom:16px"><div style="font-weight:700">On te redemandera dans 2 h</div><div class="caption" style="margin-top:4px">Quand tu ouvriras Ezali?, on te demandera si c'est revenu. Ta réponse met la carte à jour pour tout le monde.</div></div>` : ""}
         <a class="btn btn-primary btn-block" href="#accueil">Voir la carte</a>
         <button class="btn btn-ghost btn-block" id="again" style="margin-top:8px">Faire un autre signalement</button>
       </div>`;
     document.getElementById("again").addEventListener("click", () => { r.sent = false; r.state = null; r.kind = null; viewReport(); });
-    r.commune = null; r.quartier = undefined;
     return;
   }
+
   const s = SERVICES[r.service];
   const dot = { ok: "var(--ok)", instable: "var(--mid)", coupe: "var(--bad)" };
+  const opt = (key, title, sub, disabled) => `
+    <button class="where${r.where === key ? " on" : ""}" data-where="${key}" ${disabled ? "disabled" : ""} aria-pressed="${r.where === key}">
+      <span class="where-ico">${ico(key === "home" ? "home" : key === "work" ? "briefcase" : "locate")}</span>
+      <span class="grow"><span class="where-t">${esc(title)}</span><span class="where-s">${esc(sub)}</span></span>
+      <span class="where-dot" aria-hidden="true"></span>
+    </button>`;
   $app.innerHTML = `
     <div class="view">
       <div class="top">
@@ -1069,21 +1172,20 @@ function viewReport() {
       <h1 class="h1" style="margin-top:10px">Nini ezali kosalema ?</h1>
       <p class="caption" style="margin:6px 0 16px">Qu'est-ce qui se passe ? Ton signalement est anonyme.</p>
 
-      <label class="overline" for="commune">Commune</label>
-      <div class="row" style="margin:8px 0 18px">
-        <select class="select" id="commune">${COMMUNES.map((c) => `<option ${c === r.commune ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
-        <button class="icon-btn" id="gps" style="flex:0 0 50px;width:50px;height:50px;border-radius:14px" aria-label="Me localiser">${ico("locate")}</button>
-      </div>
-
-      <div class="overline" style="margin-bottom:8px">Quartier</div>
-      <button class="select" id="qbtn" style="text-align:left;display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
-        <span>${r.quartier ? esc(r.quartier) : `<span style="color:var(--muted)">Choisir le quartier (conseillé)</span>`}</span>${ico("chev")}
-      </button>
-
       <div class="overline" style="margin-bottom:8px">Catégorie</div>
       <div class="services">
         ${SVC_KEYS.map((k) => `<button class="service" data-svc="${k}" aria-pressed="${k === r.service}" style="--svc:${SVC_COLOR[k]}">${svcTile(k, "sm")}${esc(SERVICES[k].name === "Circulation" ? "Routes" : SERVICES[k].name)}</button>`).join("")}
       </div>
+
+      <div class="overline" style="margin:20px 0 8px">Où ?</div>
+      <div class="stack" style="gap:8px">
+        ${opt("home", "Chez moi", placeLabel(home) || "Domicile", false)}
+        ${work ? opt("work", "Au travail", placeLabel(work), false)
+          : `<a class="where add" href="#lieu/travail"><span class="where-ico">${ico("plus")}</span><span class="grow"><span class="where-t">Ajouter mon lieu de travail</span><span class="where-s">Bureau, école, marché…</span></span></a>`}
+        ${placeOnly ? "" : opt("here", "Là où je suis", r.here ? placeLabel(r.here) : "Détecté par le GPS", false)}
+      </div>
+      ${placeOnly ? `<p class="caption" style="margin-top:8px">Le courant et l'eau se signalent seulement chez toi ou à ton travail : c'est ce qui rend l'information fiable.</p>` : ""}
+      ${r.where === "here" && r.here ? `<button class="btn btn-ghost" id="hereq" style="padding:0 4px;margin-top:4px">${ico("search")}${r.here.quartier ? "Changer de quartier" : "Préciser le quartier (conseillé)"}</button>` : ""}
 
       <div class="overline" style="margin:20px 0 8px">${esc(s.name)}, maintenant</div>
       <div class="choices">
@@ -1095,46 +1197,116 @@ function viewReport() {
         <div class="pills" style="flex-wrap:wrap;padding:0">
           ${Object.entries(KINDS).map(([k, v]) => `<button class="pill" data-kind="${k}" aria-pressed="${r.kind === k}">${esc(v)}</button>`).join("")}
         </div>
-        <p class="caption" style="margin-top:8px">Pas de nom, pas d'adresse : seulement la commune. Ezali? ne remplace pas les secours.</p>` : ""}
+        <p class="caption" style="margin-top:8px">Pas de nom, pas d'adresse : seulement la commune et le quartier. Ezali? ne remplace pas les secours.</p>` : ""}
 
-      <div class="card pad" style="margin-top:22px" id="recap" ${r.state ? "" : "hidden"}>
+      <div class="card pad" style="margin-top:22px" ${r.state && whereText ? "" : "hidden"}>
         <div class="overline">Vérifie avant d'envoyer</div>
-        <div style="margin-top:8px;font-weight:700">${r.quartier ? esc(r.quartier) + ", " : ""}${esc(r.commune)} · ${esc(s.name)}</div>
+        <div style="margin-top:8px;font-weight:700">${esc(whereText)} · ${esc(s.name)}</div>
         <div style="margin-top:6px">${r.state ? badge(r.state, s.states[r.state] + (r.kind ? " · " + KINDS[r.kind] : "")) : ""}</div>
       </div>
-      <button class="btn btn-primary btn-block" id="send" style="margin-top:14px" ${r.state ? "" : "disabled"}>Envoyer le signalement</button>
+      <button class="btn btn-primary btn-block" id="send" style="margin-top:14px" ${r.state && whereText ? "" : "disabled"}>Envoyer le signalement</button>
       <p class="caption" style="text-align:center;margin-top:10px">Un signalement toutes les 10 minutes par commune et par catégorie.</p>
     </div>`;
 
-  document.getElementById("commune").addEventListener("change", (e) => { r.commune = e.target.value; r.quartier = undefined; viewReport(); });
-  document.getElementById("qbtn").addEventListener("click", () => {
+  $app.querySelectorAll("[data-svc]").forEach((b) => b.addEventListener("click", () => { r.service = b.dataset.svc; r.state = null; r.kind = null; viewReport(); }));
+  $app.querySelectorAll("[data-where]").forEach((b) => b.addEventListener("click", async () => {
+    r.where = b.dataset.where;
+    if (r.where === "here" && !r.here) {
+      b.classList.add("loading");
+      try { r.here = { commune: await locate(), quartier: null }; toast(`Tu es à ${r.here.commune}. Précise le quartier si tu le connais.`); }
+      catch (err) { r.where = "home"; toast(err.message); }
+    }
+    viewReport();
+  }));
+  const hq = document.getElementById("hereq");
+  if (hq) hq.addEventListener("click", () => {
     $app.innerHTML = `
       <div class="view">
-        <div class="top"><button class="icon-btn" id="qback" aria-label="Retour">${ico("back")}</button><span class="caption">${esc(r.commune)}</span></div>
+        <div class="top"><button class="icon-btn" id="qback" aria-label="Retour">${ico("back")}</button><span class="caption">${esc(r.here.commune)}</span></div>
         <h1 class="h1" style="margin:10px 0 14px">Quel quartier ?</h1>
         <div id="picker"></div>
       </div>`;
     document.getElementById("qback").addEventListener("click", viewReport);
-    quartierPicker(document.getElementById("picker"), r.commune, r.quartier, (q) => { r.quartier = q; viewReport(); }, { skipLabel: "Je ne connais pas le quartier" });
+    quartierPicker(document.getElementById("picker"), r.here.commune, r.here.quartier, (q) => { r.here.quartier = q; viewReport(); }, { skipLabel: "Je ne connais pas le quartier" });
   });
-  document.getElementById("gps").addEventListener("click", async (e) => {
-    const b = e.currentTarget; b.classList.add("loading");
-    try { r.commune = await locate(); r.quartier = undefined; viewReport(); toast(`Commune détectée : ${r.commune}. Choisis le quartier.`); }
-    catch (err) { b.classList.remove("loading"); toast(err.message); }
-  });
-  $app.querySelectorAll("[data-svc]").forEach((b) => b.addEventListener("click", () => { r.service = b.dataset.svc; r.state = null; r.kind = null; viewReport(); }));
   $app.querySelectorAll("[data-state]").forEach((b) => b.addEventListener("click", () => { r.state = b.dataset.state; if (r.state === "ok") r.kind = null; viewReport(); }));
   $app.querySelectorAll("[data-kind]").forEach((b) => b.addEventListener("click", () => { r.kind = r.kind === b.dataset.kind ? null : b.dataset.kind; viewReport(); }));
   document.getElementById("send").addEventListener("click", async (e) => {
     const b = e.currentTarget; b.classList.add("loading");
+    const payload = r.where === "here"
+      ? { commune: r.here.commune, quartier: r.here.quartier, service: r.service, state: r.state, kind: r.kind }
+      : { place: r.where, service: r.service, state: r.state, kind: r.kind };
     try {
-      await sendReport(r);
+      await sendReport(payload);
+      r.sentLabel = whereText;
+      r.sentFollowup = r.where !== "here" && PLACE_ONLY.includes(r.service) && r.state !== "ok";
+      followups.after(r.where, r.service, r.state, whereText);
       r.sent = true;
       if (navigator.vibrate) navigator.vibrate(30);
       viewReport();
-    } catch (err) { b.classList.remove("loading"); toast(err.message); }
+    } catch (err) {
+      b.classList.remove("loading");
+      toast(err.message);
+      if (/Enregistre d'abord ton domicile/.test(err.message)) { syncPlaces(); }
+    }
   });
 }
+
+// ---------- Relances « C'est revenu ? » ----------
+// 2 h après un signalement de coupure (courant ou eau, chez soi ou au travail), l'app redemande à l'ouverture.
+// Une relance s'arrête après 24 h, ou dès qu'on répond « c'est revenu ».
+const FOLLOWUP_FIRST = 2 * 3600e3, FOLLOWUP_EVERY = 2 * 3600e3, FOLLOWUP_MAX = 24 * 3600e3;
+const followups = {
+  save() { store.set("followups", state.followups); },
+  after(where, service, value, label) {
+    if (where === "here" || !PLACE_ONLY.includes(service)) return;
+    state.followups = state.followups.filter((f) => !(f.place === where && f.service === service));
+    if (value !== "ok") state.followups.push({ place: where, service, label, at: Date.now(), asked: 0 });
+    this.save();
+  },
+  due() {
+    const now = Date.now();
+    state.followups = state.followups.filter((f) => now - f.at < FOLLOWUP_MAX);
+    this.save();
+    return state.followups.find((f) => now - f.at >= FOLLOWUP_FIRST && now - (f.asked || 0) >= FOLLOWUP_EVERY) || null;
+  },
+  card() {
+    const f = this.due();
+    if (!f) return "";
+    const what = f.service === "courant" ? "le courant" : "l'eau";
+    const lost = f.service === "courant" ? "une coupure de courant" : "une coupure d'eau";
+    const hours = Math.floor((Date.now() - f.at) / 3600e3);
+    return `
+      <div class="card followup" id="followup">
+        <div class="fu-head">${svcTile(f.service, "sm")}<span class="overline" style="color:var(--primary)">Petite question</span></div>
+        <div class="fu-q">${esc(what.charAt(0).toUpperCase() + what.slice(1))} est revenu${f.service === "eau" ? "e" : ""} ${f.place === "home" ? "chez toi" : "à ton travail"} ?</div>
+        <div class="caption">Il y a ${hours} h, tu as signalé ${lost} à ${esc(f.label)}. Ta réponse met la carte à jour pour tout le monde.</div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn btn-primary" data-fu="ok">Oui, ${f.service === "courant" ? "il est revenu" : "elle est revenue"}</button>
+          <button class="btn btn-secondary" data-fu="coupe">Non, toujours pas</button>
+        </div>
+        <button class="btn btn-ghost" data-fu="later" style="width:100%;margin-top:4px;color:var(--muted)">Plus tard</button>
+      </div>`;
+  },
+  bind() {
+    const box = document.getElementById("followup");
+    if (!box) return;
+    const f = this.due();
+    box.querySelectorAll("[data-fu]").forEach((b) => b.addEventListener("click", async () => {
+      const a = b.dataset.fu;
+      if (a === "later") { f.asked = Date.now(); this.save(); box.remove(); return; }
+      b.classList.add("loading");
+      try {
+        await sendReport({ place: f.place, service: f.service, state: a });
+        if (a === "ok") { state.followups = state.followups.filter((x) => x !== f); toast("Melesi ! La carte est à jour."); }
+        else { f.asked = Date.now(); toast("Merci. On te redemandera plus tard."); }
+        this.save();
+        box.remove();
+        loadHome(true);
+      } catch (err) { b.classList.remove("loading"); toast(err.message); }
+    }));
+  },
+};
 
 // ---------- Suivis ----------
 async function viewFollows(sub) {
@@ -1344,8 +1516,16 @@ function viewProfile(sub) {
         <div class="item"><span class="grow"><span class="name">Langue</span><span class="caption" style="display:block">Français</span></span></div>
         <div class="item" id="notifications"><span class="grow"><span class="name">Notifications</span><span class="caption" style="display:block">Bientôt disponibles : retour du courant, coupure d'eau… dans les communes de ton choix.</span></span></div>
         <a class="item" href="#suivis"><span class="grow"><span class="name">Communes suivies</span><span class="caption" style="display:block">${state.follows.length} commune${state.follows.length > 1 ? "s" : ""}</span></span>${ico("chev")}</a>
-        <a class="item" href="#commune"><span class="grow"><span class="name">Domicile</span><span class="caption" style="display:block">${esc(homeLabel())}</span></span>${ico("chev")}</a>
-        <a class="item" href="#quartier"><span class="grow"><span class="name">Mon quartier</span><span class="caption" style="display:block">${state.quartier ? esc(state.quartier) : "Pas encore choisi"}</span></span>${ico("chev")}</a>
+      </div>
+
+      <div class="overline" style="margin:22px 2px 8px">Mes lieux</div>
+      <div class="card list">
+        <a class="item" href="#commune"><span class="where-ico">${ico("home")}</span><span class="grow"><span class="name">Domicile</span><span class="caption" style="display:block">${esc(homeLabel())}</span></span>${ico("chev")}</a>
+        <a class="item" href="#lieu/travail"><span class="where-ico">${ico("briefcase")}</span><span class="grow"><span class="name">Travail</span><span class="caption" style="display:block">${state.places.work ? esc(placeLabel(state.places.work)) : "Bureau, école, marché… (facultatif)"}</span></span>${ico("chev")}</a>
+        <div class="item caption" style="display:block;line-height:1.5">Le courant et l'eau se signalent seulement pour ces deux lieux. Chaque lieu peut changer une fois par semaine (tu peux corriger une erreur dans les 30 minutes). Ça limite les fausses informations.</div>
+      </div>
+
+      <div class="card list" style="margin-top:10px">
         <button class="item" id="road" role="switch" aria-checked="${state.roadPrompt}"><span class="grow"><span class="name">Me proposer de signaler quand je suis en route</span><span class="caption" style="display:block">Quand l'app est ouverte et que tu te déplaces vite, Ezali? te demande comment ça roule. Utilise la localisation.</span></span><span class="switch" aria-hidden="true"></span></button>
       </div>
 
@@ -1353,7 +1533,7 @@ function viewProfile(sub) {
       <div class="card list">
         <button class="item" id="loc"><span class="grow"><span class="name">Localisation</span><span class="caption" style="display:block">Facultative. Sert seulement à trouver ta commune, sur ton téléphone.</span></span>${ico("locate")}</button>
         <a class="item" href="#profil/anonymat"><span class="grow"><span class="name">Anonymat</span><span class="caption" style="display:block">Ce qu'Ezali? enregistre, et ce qu'il n'enregistre pas</span></span>${ico("chev")}</a>
-        <button class="item" id="wipe"><span class="grow"><span class="name" style="color:var(--bad-ink)">Effacer mes données locales</span><span class="caption" style="display:block">Commune, suivis et préférences sur ce téléphone</span></span>${ico("trash")}</button>
+        <button class="item" id="wipe"><span class="grow"><span class="name" style="color:var(--bad-ink)">Effacer mes données locales</span><span class="caption" style="display:block">Domicile, travail, suivis, trajets et préférences (aussi tes lieux sur le serveur)</span></span>${ico("trash")}</button>
       </div>
 
       <div class="overline" style="margin:22px 2px 8px">Application</div>
@@ -1396,9 +1576,12 @@ function viewProfile(sub) {
       setTimeout(() => { if (b.isConnected) { delete b.dataset.confirm; b.querySelector(".name").textContent = "Effacer mes données locales"; } }, 4000);
       return;
     }
-    store.clear();
-    location.hash = "";
-    location.reload();
+    // Supprime aussi les lieux enregistrés sur le serveur, puis tout ce qui est sur le téléphone.
+    fetch(`/api/places?device=${encodeURIComponent(deviceId())}`, { method: "DELETE" }).catch(() => {}).finally(() => {
+      store.clear();
+      location.hash = "";
+      location.reload();
+    });
   });
 }
 
@@ -1560,6 +1743,7 @@ function route() {
   else if (tab === "suivis") viewFollows(arg);
   else if (tab === "classement") viewRanking();
   else if (tab === "profil") viewProfile(arg);
+  else if (tab === "lieu") viewWorkPlace();
   else viewHome();
   if (tab !== "signaler") state.report.sent = false;
 }
@@ -1585,6 +1769,7 @@ window.addEventListener("resize", () => map.place());
 applyTheme();
 if (!handleDeepLink()) route();
 road.sync();
+syncPlaces();
 
 (function hideSplash() {
   const el = document.getElementById("splash");

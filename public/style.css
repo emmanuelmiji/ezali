@@ -454,3 +454,23 @@ main { padding-bottom: calc(124px + env(safe-area-inset-bottom)); }
 .btn-primary { box-shadow: 0 8px 18px color-mix(in srgb, var(--primary) 30%, transparent); }
 .btn-block { border-radius: 18px; }
 .select > svg { width: 18px; height: 18px; flex-shrink: 0; color: var(--muted); }
+
+/* Où ? (Chez moi / Au travail / Là où je suis) */
+.where { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 64px; padding: 10px 14px; border-radius: 18px; border: 2px solid transparent; background: var(--surface); box-shadow: var(--shadow); color: var(--text); font: inherit; text-align: left; text-decoration: none; cursor: pointer; transition: border-color var(--fast), background var(--fast); }
+[data-theme="dark"] .where { border-color: var(--line); }
+.where.on { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 8%, var(--surface)); }
+.where.add { box-shadow: none; border: 1.5px dashed var(--line); background: transparent; }
+.where .grow { flex: 1; min-width: 0; }
+.where-ico { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; background: var(--surface-2); color: var(--primary); flex-shrink: 0; }
+.where-ico svg { width: 19px; height: 19px; }
+.where-t { display: block; font-weight: 750; font-size: 15px; }
+.where-s { display: block; font-size: 13px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.where-dot { width: 22px; height: 22px; border-radius: 11px; border: 2px solid var(--line); flex-shrink: 0; position: relative; }
+.where.on .where-dot { border-color: var(--primary); }
+.where.on .where-dot::after { content: ""; position: absolute; inset: 4px; border-radius: 50%; background: var(--primary); }
+.where.loading { opacity: 0.6; pointer-events: none; }
+
+/* Relance « C'est revenu ? » */
+.followup { margin-top: 14px; padding: 16px; border: 2px solid #F7D618 !important; }
+.fu-head { display: flex; align-items: center; gap: 10px; }
+.fu-q { font-size: 19px; font-weight: 800; letter-spacing: -0.01em; margin: 10px 0 4px; }
