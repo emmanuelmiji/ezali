@@ -4,7 +4,7 @@
    Pas de compte, pas de bibliothèque : tout tient dans ce fichier.
    ========================================================= */
 
-const VERSION = "1.3.0";
+const VERSION = "1.4.0";
 const TAGLINE = "Kinshasa en direct";
 
 // ---------- Données fixes ----------
@@ -50,6 +50,8 @@ const SERVICES = {
   securite: { name: "Sécurité", states: { ok: "Situation normale", instable: "Prudence", coupe: "Zone à risque" } },
 };
 const SVC_KEYS = Object.keys(SERVICES);
+const SVC_COLOR = { courant: "#F2B705", eau: "#1E9BD7", routes: "#7C5CFF", reseau: "#13A89E", securite: "#4C6EF5" };
+const svcTile = (k, size = "") => `<span class="svc-tile ${size}" style="--svc:${SVC_COLOR[k]}">${ico(k)}</span>`;
 const KINDS = { insecurite: "Insécurité", accident: "Accident", inondation: "Inondation", autre: "Autre" };
 const STATE_LABEL = { ok: "Normal", instable: "Perturbé", coupe: "Fortement perturbé", inconnu: "Pas de données" };
 const TRUST_LABEL = { elevee: "Confiance élevée", moyenne: "Confiance moyenne", faible: "Confiance faible" };
@@ -308,7 +310,7 @@ function locate() {
 
 function header(title, sub) {
   return `
-    <div class="top">
+    <div class="band band-sm"><div class="top">
       <a class="brand" href="#accueil" aria-label="Ezali, accueil">
         <span class="mark">${ico("bolt")}</span>
         <span><span class="name">${title ? esc(title) : "Ezali<b>?</b>"}</span><span class="caption" style="display:block;margin-top:3px">${esc(sub)}</span></span>
@@ -317,7 +319,7 @@ function header(title, sub) {
         <a class="icon-btn" href="#profil/notifications" aria-label="Notifications">${ico("bell")}</a>
         <a class="icon-btn" href="#profil" aria-label="Paramètres">${ico("settings")}</a>
       </div>
-    </div>`;
+    </div></div>`;
 }
 
 function offlineNotice() {
@@ -494,13 +496,29 @@ function viewChooseQuartier() {
 function viewHome() {
   $app.innerHTML = `
     <div class="view">
-      ${header(null, TAGLINE)}
-      <div id="home-notice"></div>
-      <div class="hello">${greeting()}</div>
-      <div class="caption">Voici ce qui se passe à Kinshasa${state.quartier ? ` et à ${esc(state.quartier)}` : ""}.</div>
+      <div class="band hero">
+        <div class="top">
+          <a class="brand" href="#accueil" aria-label="Ezali, accueil">
+            <span class="mark">${ico("bolt")}</span>
+            <span><span class="name">Ezali<b>?</b></span><span class="caption" style="display:block;margin-top:3px">${TAGLINE}</span></span>
+          </a>
+          <div class="top-actions">
+            <a class="icon-btn" href="#profil/notifications" aria-label="Notifications">${ico("bell")}</a>
+            <a class="icon-btn" href="#profil" aria-label="Paramètres">${ico("settings")}</a>
+          </div>
+        </div>
+        <div class="hello">${greeting()}</div>
+        <div class="hero-sub">Chez toi · <b>${esc(homeLabel())}</b></div>
+        <button class="glass mine" id="mine" aria-label="Voir le détail de ta commune"><div class="sk" style="height:96px;opacity:.25"></div></button>
+        <div class="hero-foot">
+          <span id="mine-note" class="hero-note"></span>
+          <button class="chip-glass" id="near">${ico("locate")}Me localiser</button>
+        </div>
+      </div>
+      <div id="home-notice" style="margin-top:14px"></div>
       ${tipCard()}
 
-      <section class="section" style="margin-top:16px">
+      <section class="section">
         <div class="section-head" style="margin-bottom:2px">
           <h2 class="h2">Kinshasa, actuellement</h2>
           <button class="icon-btn" id="refresh" aria-label="Actualiser" style="width:38px;height:38px">${ico("refresh")}</button>
@@ -509,14 +527,6 @@ function viewHome() {
         <div class="cats" id="cats">
           ${SVC_KEYS.map(() => `<div class="card sk" style="height:118px"></div>`).join("")}
         </div>
-      </section>
-
-      <section class="section">
-        <div class="section-head">
-          <h2 class="h2">Chez toi · ${esc(homeLabel())}</h2>
-          <button class="btn btn-ghost" id="near" style="height:36px;padding:0 6px;font-size:13px">${ico("locate")}Me localiser</button>
-        </div>
-        <button class="card mine" id="mine" style="width:100%;text-align:left;color:inherit;font:inherit"><div class="sk" style="height:84px"></div></button>
       </section>
 
       <section class="section">
@@ -533,7 +543,7 @@ function viewHome() {
         </div>
         <div class="pills" role="group" aria-label="Filtrer la carte">
           <button class="pill" data-filter="tout" aria-pressed="${state.filter === "tout"}">Tout</button>
-          ${SVC_KEYS.map((k) => `<button class="pill" data-filter="${k}" aria-pressed="${state.filter === k}">${ico(k)}${SERVICES[k].name}</button>`).join("")}
+          ${SVC_KEYS.map((k) => `<button class="pill" data-filter="${k}" aria-pressed="${state.filter === k}" style="--svc:${SVC_COLOR[k]}"><span class="pill-ico">${ico(k)}</span>${SERVICES[k].name}</button>`).join("")}
         </div>
         <div class="mapbox">
           <div id="mapwrap"><div class="sk map" style="border-radius:0"></div></div>
@@ -610,11 +620,13 @@ async function loadHome(fresh) {
     if (s.coupe) { st = "coupe"; text = pl(s.coupe, "touchée") + (s.instable ? " · " + pl(s.instable, "perturbée") : ""); }
     else if (s.instable) { st = "instable"; text = pl(s.instable, "commune perturbée").replace("communes perturbée", "communes perturbées"); }
     else if (s.ok) { st = "ok"; text = "Normal là où c'est signalé"; }
+    const none = 24 - s.ok - s.instable - s.coupe;
+    const bar = `<span class="dist" aria-hidden="true">${[["ok", s.ok], ["instable", s.instable], ["coupe", s.coupe], ["inconnu", none]].filter(([, n]) => n).map(([c, n]) => `<i class="d-${c}" style="flex:${n}"></i>`).join("")}</span>`;
     return `
       <button class="card cat" data-cat="${k}" aria-label="${esc(SERVICES[k].name)} : ${esc(text)}">
-        <span class="cat-head"><span class="cat-ico">${ico(k)}</span>${esc(SERVICES[k].name)}</span>
-        ${badge(st, text)}
-        ${s.coupe || s.instable ? `<span class="caption">sur 24 communes</span>` : ""}
+        <span class="cat-head">${svcTile(k)}${esc(SERVICES[k].name)}</span>
+        <span class="cat-state t-${st}">${esc(text)}</span>
+        ${bar}
         <span class="cat-meta">${s.reports ? `${s.reports} signalement${s.reports > 1 ? "s" : ""} · ${agoText(s.last)}` : "Aucun signalement récent"}</span>
       </button>`;
   }).join("");
@@ -629,20 +641,19 @@ async function loadHome(fresh) {
   const mine = data.communes[state.commune];
   const local = (k) => (state.quartier && mine[k].quartiers && mine[k].quartiers[state.quartier]) || null;
   const nLocal = SVC_KEYS.filter(local).length;
+  const ov = overall(mine);
+  const head = { ok: "Tout va bien chez toi", instable: "Quelques perturbations", coupe: "Attention, ça coupe", inconnu: "Pas encore d'info récente" }[ov];
   document.getElementById("mine").innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
-      <div>${badge(overall(mine))}</div>
-      <span class="caption">${lastUpdate(mine) ? agoText(lastUpdate(mine)) : "Pas de signalement récent"}</span>
-    </div>
+    <div class="mine-head"><span class="pulse g-${ov}"></span><span>${head}</span><span class="hero-time">${lastUpdate(mine) ? agoText(lastUpdate(mine)) : ""}</span></div>
     <div class="mine-grid">
       ${SVC_KEYS.map((k) => {
         const i = local(k) || mine[k];
-        return `<span class="mini s-${i.state}${local(k) ? "" : " commune-level"}">${ico(k)}${esc(i.state === "inconnu" ? "—" : SERVICES[k].states[i.state])}</span>`;
+        return `<span class="mini g-${i.state}${local(k) ? "" : " commune-level"}"><span class="mini-ico" style="--svc:${SVC_COLOR[k]}">${ico(k)}</span><span class="mini-txt">${esc(i.state === "inconnu" ? "Pas d'info" : SERVICES[k].states[i.state])}</span></span>`;
       }).join("")}
-    </div>
-    <p class="caption" style="margin:10px 0 0">${state.quartier
-      ? (nLocal ? `${nLocal} info${nLocal > 1 ? "s" : ""} de ton quartier. Les cases en pointillé concernent toute la commune.` : `Pas encore d'info pour ${esc(state.quartier)} : ce sont celles de la commune.`)
-      : `Ajoute ton quartier dans Profil pour des infos plus précises.`}</p>`;
+    </div>`;
+  document.getElementById("mine-note").textContent = state.quartier
+    ? (nLocal ? `${nLocal} info${nLocal > 1 ? "s" : ""} de ton quartier` : `Infos de toute la commune`)
+    : "Ajoute ton quartier dans Profil";
   renderTrips(data);
 
   // Derniers signalements
@@ -700,9 +711,9 @@ function feedItem(r) {
   const colors = { ok: "var(--ok-bg);color:var(--ok-ink)", instable: "var(--mid-bg);color:var(--mid-ink)", coupe: "var(--bad-bg);color:var(--bad-ink)" };
   return `
     <button class="item" data-open="${esc(r.commune)}">
-      <span class="feed-ico" style="background:${colors[st]}">${ico(r.service)}</span>
-      <span class="grow"><span class="name">${r.quartier ? esc(r.quartier) + " · " : ""}${esc(r.commune)}</span><span class="caption" style="display:block">${esc(SERVICES[r.service].name)} · ${esc(SERVICES[r.service].states[st])}${r.kind ? " · " + esc(KINDS[r.kind]) : ""}</span></span>
-      <span class="caption">${agoText(r.at)}</span>
+      ${svcTile(r.service)}
+      <span class="grow"><span class="name">${r.quartier ? esc(r.quartier) : esc(r.commune)}</span><span class="caption" style="display:block">${r.quartier ? esc(r.commune) + " · " : ""}${esc(SERVICES[r.service].name)}${r.kind ? " · " + esc(KINDS[r.kind]) : ""}</span></span>
+      <span style="text-align:right">${badge(st, SERVICES[r.service].states[st])}<span class="caption" style="display:block;margin-top:4px">${agoText(r.at)}</span></span>
     </button>`;
 }
 
@@ -939,7 +950,7 @@ function openSheet(name) {
         const qsum = i.qstats ? quartierSummary(k, i.qstats) : "";
         return `
           <div class="svc-row" style="align-items:flex-start">
-            <span class="cat-ico">${ico(k)}</span>
+            ${svcTile(k)}
             <div class="grow">
               <div class="name">${esc(SERVICES[k].name)}</div><div class="caption">${esc(detail)}</div>
               ${qsum ? `<div class="caption" style="margin-top:4px;color:var(--text);font-weight:600">${esc(qsum)}</div>` : ""}
@@ -1068,7 +1079,7 @@ function viewReport() {
 
       <div class="overline" style="margin-bottom:8px">Catégorie</div>
       <div class="services">
-        ${SVC_KEYS.map((k) => `<button class="service" data-svc="${k}" aria-pressed="${k === r.service}">${ico(k)}${esc(SERVICES[k].name === "Circulation" ? "Routes" : SERVICES[k].name)}</button>`).join("")}
+        ${SVC_KEYS.map((k) => `<button class="service" data-svc="${k}" aria-pressed="${k === r.service}" style="--svc:${SVC_COLOR[k]}">${svcTile(k, "sm")}${esc(SERVICES[k].name === "Circulation" ? "Routes" : SERVICES[k].name)}</button>`).join("")}
       </div>
 
       <div class="overline" style="margin:20px 0 8px">${esc(s.name)}, maintenant</div>
