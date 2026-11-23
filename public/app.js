@@ -4,7 +4,7 @@
    Pas de compte, pas de bibliothèque : tout tient dans ce fichier.
    ========================================================= */
 
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 
 // ---------- Données fixes ----------
 const COMMUNES = [
@@ -82,10 +82,14 @@ function loadFollows() {
 
 const state = {
   commune: store.get("commune", null),
+  quartier: store.get("quartier", null),        // domicile : quartier (reste sur le téléphone)
+  quartierSet: store.get("quartierSet", false), // l'utilisateur a choisi (ou passé) son quartier
+  trips: store.get("trips", []),                // trajets habituels
+  roadPrompt: store.get("roadPrompt", false),   // proposer un signalement quand on roule
   follows: loadFollows(),
   theme: store.get("theme", "auto"),
   filter: "tout",
-  report: { commune: null, service: "courant", state: null, kind: null, sent: false },
+  report: { commune: null, quartier: undefined, service: "courant", state: null, kind: null, sent: false },
   rankPeriod: "week",
   overview: null,      // dernières données reçues
   overviewAt: 0,       // heure de réception
@@ -156,11 +160,11 @@ async function getOverview(fresh = false) {
   }
 }
 
-async function sendReport({ commune, service, state: value, kind }) {
+async function sendReport({ commune, quartier, service, state: value, kind }) {
   const res = await fetch("/api/reports", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ commune, service, state: value, kind, device: deviceId() }),
+    body: JSON.stringify({ commune, quartier: quartier || null, service, state: value, kind, device: deviceId() }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || "Envoi impossible. Vérifie ta connexion et réessaie.");
@@ -176,6 +180,64 @@ function overall(c) {
 }
 const activeIssues = (c) => SVC_KEYS.filter((k) => c[k].state === "instable" || c[k].state === "coupe").length;
 const lastUpdate = (c) => Math.max(0, ...SVC_KEYS.map((k) => c[k].last || 0));
+
+// ---------- Quartiers (liste par commune) ----------
+let quartiersPromise = null;
+function getQuartiers() {
+  if (!quartiersPromise) {
+    quartiersPromise = fetch("/quartiers.json").then((r) => { if (!r.ok) throw new Error("q"); return r.json(); })
+      .catch((e) => { quartiersPromise = null; throw e; });
+  }
+  return quartiersPromise;
+}
+const normName = (s) => String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const homeLabel = () => (state.quartier ? `${state.quartier}, ${state.commune}` : state.commune);
+
+// Liste de quartiers avec recherche et « mon quartier n'est pas dans la liste ».
+// Appelle onPick(nom) — ou onPick(null) pour « je ne sais pas / passer ».
+async function quartierPicker(box, commune, current, onPick, { allowSkip = true, skipLabel = "Passer pour l'instant" } = {}) {
+  box.innerHTML = `<div class="sk" style="height:200px"></div>`;
+  let list;
+  try { list = (await getQuartiers())[commune] || []; }
+  catch { box.innerHTML = `<div class="empty">Liste des quartiers indisponible. Vérifie ta connexion.</div>`; return; }
+  box.innerHTML = `
+    <div class="search">${ico("search")}<input type="search" data-qs placeholder="Rechercher un quartier de ${esc(commune)}" autocomplete="off" aria-label="Rechercher un quartier"></div>
+    <div class="card list" data-ql style="margin-top:10px;max-height:46dvh;overflow-y:auto"></div>
+    <div data-other style="margin-top:10px"></div>`;
+  const ql = box.querySelector("[data-ql]"), qs = box.querySelector("[data-qs]"), other = box.querySelector("[data-other]");
+  const draw = () => {
+    const v = normName(qs.value);
+    const hits = list.filter((q) => normName(q).includes(v));
+    ql.innerHTML = hits.map((q) => `<button class="item" data-q="${esc(q)}"><span class="grow"><span class="name">${esc(q)}</span></span>${q === current ? ico("check") : ""}</button>`).join("")
+      || `<div class="empty">Aucun quartier trouvé dans la liste.</div>`;
+    ql.querySelectorAll("[data-q]").forEach((b) => b.addEventListener("click", () => onPick(b.dataset.q)));
+  };
+  other.innerHTML = `
+    <button class="btn btn-ghost" data-add style="padding:0 4px">${ico("plus")}Mon quartier n'est pas dans la liste</button>
+    ${allowSkip ? `<button class="btn btn-ghost" data-skip style="padding:0 4px;color:var(--muted)">${esc(skipLabel)}</button>` : ""}`;
+  other.querySelector("[data-add]").addEventListener("click", () => {
+    other.innerHTML = `
+      <label class="overline" for="newq">Nom de ton quartier</label>
+      <div class="row" style="margin-top:8px">
+        <input id="newq" class="select" maxlength="40" placeholder="Ex. : ${esc(list[0] || "Salongo")}" value="${esc(qs.value)}">
+        <button class="btn btn-primary" data-ok style="flex:0 0 auto">OK</button>
+      </div>
+      <p class="caption" style="margin-top:8px">Il apparaîtra pour tout le monde quand plusieurs personnes l'auront utilisé.</p>`;
+    const input = other.querySelector("#newq");
+    input.focus();
+    const ok = () => {
+      const v = input.value.trim().replace(/\s+/g, " ");
+      if (!/^[\p{L}\p{N}' .()\-]{2,40}$/u.test(v)) return toast("Nom invalide : 2 à 40 lettres ou chiffres.");
+      const known = list.find((q) => normName(q) === normName(v));
+      onPick(known || v);
+    };
+    other.querySelector("[data-ok]").addEventListener("click", ok);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") ok(); });
+  });
+  if (allowSkip) other.querySelector("[data-skip]").addEventListener("click", () => onPick(null));
+  qs.addEventListener("input", draw);
+  draw();
+}
 
 // ---------- Contours des communes (OpenStreetMap) ----------
 let shapesPromise = null;
@@ -272,8 +334,9 @@ function viewChooseCommune(fromProfile) {
         <span class="brand"><span class="mark">${ico("bolt")}</span><span class="name">Ezali<b>?</b></span></span>
         ${fromProfile ? `<a class="icon-btn" href="#profil" aria-label="Retour">${ico("back")}</a>` : ""}
       </div>
-      <h1 class="h1" style="margin-top:20px">Mbote ! Tu habites dans quelle commune ?</h1>
-      <p class="caption" style="margin:8px 0 16px">Ezali? te montrera d'abord ce qui se passe chez toi. Tu pourras changer plus tard.</p>
+      <div class="overline" style="margin-top:20px">Étape 1 sur 2 · Domicile</div>
+      <h1 class="h1" style="margin-top:6px">Mbote ! Tu habites dans quelle commune ?</h1>
+      <p class="caption" style="margin:8px 0 16px">Ezali? te montrera d'abord ce qui se passe chez toi. Ton domicile reste sur ton téléphone.</p>
       <button class="btn btn-secondary btn-block" id="gps">${ico("locate")}Me localiser automatiquement</button>
       <p class="caption" style="margin:8px 0 18px">Facultatif. Ta position reste sur ton téléphone : elle sert seulement à trouver ta commune.</p>
       <div class="cats" style="grid-template-columns:repeat(3,minmax(0,1fr))">
@@ -281,21 +344,46 @@ function viewChooseCommune(fromProfile) {
       </div>
     </div>`;
   const pick = (name) => {
+    if (state.commune !== name) { state.quartier = null; store.set("quartier", null); }
     state.commune = name;
     store.set("commune", name);
+    state.quartierSet = false;
+    store.set("quartierSet", false);
     if (!state.follows.some((f) => f.name === name)) {
       state.follows.unshift({ name, group: "moi" });
       store.set("follows", state.follows);
     }
-    // Si l'utilisateur est arrivé par un lien partagé, on ouvre la commune du lien.
-    location.hash = state.pendingOpen ? `#commune/${encodeURIComponent(state.pendingOpen)}` : "#accueil";
-    state.pendingOpen = null;
+    location.hash = "#quartier";
   };
   $app.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => pick(b.dataset.pick)));
   document.getElementById("gps").addEventListener("click", async (e) => {
     e.currentTarget.classList.add("loading");
     try { const name = await locate(); toast(`Tu es à ${name}.`); pick(name); }
     catch (err) { toast(err.message); e.target.closest("button").classList.remove("loading"); }
+  });
+}
+
+// ---------- Choix du quartier (étape 2) ----------
+function viewChooseQuartier() {
+  $app.innerHTML = `
+    <div class="view">
+      <div class="top">
+        <span class="brand"><span class="mark">${ico("bolt")}</span><span class="name">Ezali<b>?</b></span></span>
+        <a class="icon-btn" href="#commune" aria-label="Changer de commune">${ico("back")}</a>
+      </div>
+      <div class="overline" style="margin-top:20px">Étape 2 sur 2 · Domicile</div>
+      <h1 class="h1" style="margin-top:6px">Et ton quartier, à ${esc(state.commune)} ?</h1>
+      <p class="caption" style="margin:8px 0 14px">Une commune est grande : le courant peut être là dans un quartier et coupé dans un autre. Ton quartier rend les informations plus précises.</p>
+      <div id="picker"></div>
+    </div>`;
+  quartierPicker(document.getElementById("picker"), state.commune, state.quartier, (q) => {
+    state.quartier = q;
+    state.quartierSet = true;
+    store.set("quartier", q);
+    store.set("quartierSet", true);
+    location.hash = state.pendingOpen ? `#commune/${encodeURIComponent(state.pendingOpen)}` : "#accueil";
+    state.pendingOpen = null;
+    if (location.hash === "#accueil") route();
   });
 }
 
@@ -319,10 +407,15 @@ function viewHome() {
 
       <section class="section">
         <div class="section-head">
-          <h2 class="h2">Chez toi · ${esc(state.commune)}</h2>
+          <h2 class="h2">Chez toi · ${esc(homeLabel())}</h2>
           <button class="btn btn-ghost" id="near" style="height:36px;padding:0 6px;font-size:13px">${ico("locate")}Me localiser</button>
         </div>
         <button class="card mine" id="mine" style="width:100%;text-align:left;color:inherit;font:inherit"><div class="sk" style="height:84px"></div></button>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><h2 class="h2">Avant de sortir</h2><a class="btn btn-ghost" href="#suivis/trajet" style="height:36px;padding:0 6px;font-size:13px">${ico("plus")}Trajet</a></div>
+        <div id="trips" class="stack"><div class="card sk" style="height:84px"></div></div>
       </section>
 
       <section class="section">
@@ -411,7 +504,7 @@ async function loadHome(fresh) {
       <button class="card cat" data-cat="${k}" aria-label="${esc(SERVICES[k].name)} : ${esc(text)}">
         <span class="cat-head"><span class="cat-ico">${ico(k)}</span>${esc(SERVICES[k].name)}</span>
         ${badge(st, text)}
-        <span class="caption">${s.coupe || s.instable ? "communes" : ""}</span>
+        ${s.coupe || s.instable ? `<span class="caption">sur 24 communes</span>` : ""}
         <span class="cat-meta">${s.reports ? `${s.reports} signalement${s.reports > 1 ? "s" : ""} · ${agoText(s.last)}` : "Aucun signalement récent"}</span>
       </button>`;
   }).join("");
@@ -422,16 +515,25 @@ async function loadHome(fresh) {
     document.querySelector(".mapbox").scrollIntoView({ behavior: "smooth", block: "center" });
   }));
 
-  // Chez toi
+  // Chez toi : on prend l'info du quartier quand elle existe, sinon celle de la commune.
   const mine = data.communes[state.commune];
+  const local = (k) => (state.quartier && mine[k].quartiers && mine[k].quartiers[state.quartier]) || null;
+  const nLocal = SVC_KEYS.filter(local).length;
   document.getElementById("mine").innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
       <div>${badge(overall(mine))}</div>
       <span class="caption">${lastUpdate(mine) ? agoText(lastUpdate(mine)) : "Pas de signalement récent"}</span>
     </div>
     <div class="mine-grid">
-      ${SVC_KEYS.map((k) => `<span class="mini s-${mine[k].state}">${ico(k)}${esc(mine[k].state === "inconnu" ? "—" : SERVICES[k].states[mine[k].state])}</span>`).join("")}
-    </div>`;
+      ${SVC_KEYS.map((k) => {
+        const i = local(k) || mine[k];
+        return `<span class="mini s-${i.state}${local(k) ? "" : " commune-level"}">${ico(k)}${esc(i.state === "inconnu" ? "—" : SERVICES[k].states[i.state])}</span>`;
+      }).join("")}
+    </div>
+    <p class="caption" style="margin:10px 0 0">${state.quartier
+      ? (nLocal ? `${nLocal} info${nLocal > 1 ? "s" : ""} de ton quartier. Les cases en pointillé concernent toute la commune.` : `Pas encore d'info pour ${esc(state.quartier)} : ce sont celles de la commune.`)
+      : `Ajoute ton quartier dans Profil pour des infos plus précises.`}</p>`;
+  renderTrips(data);
 
   // Derniers signalements
   const feed = document.getElementById("feed");
@@ -450,13 +552,46 @@ async function loadHome(fresh) {
   }
 }
 
+// « Avant de sortir » : état de la circulation et de la sécurité sur les trajets habituels.
+function tripLabel(t) { return t.name ? `${t.name} · ${t.from} → ${t.to}` : `${t.from} → ${t.to}`; }
+function renderTrips(data) {
+  const box = document.getElementById("trips");
+  if (!box) return;
+  if (!state.trips.length) {
+    box.innerHTML = `<a class="card pad" href="#suivis/trajet" style="display:block;text-decoration:none;color:inherit">
+      <div style="font-weight:700">Ajoute ton trajet habituel</div>
+      <div class="caption" style="margin-top:4px">Par exemple ${esc(state.commune)} → Gombe. Avant de sortir, tu verras s'il y a des bouchons ou une zone à risque sur le chemin.</div></a>`;
+    return;
+  }
+  box.innerHTML = state.trips.map((t) => {
+    const chain = [t.from, ...(t.via || []), t.to];
+    const road = chain.map((c) => ({ c, r: data.communes[c].routes, s: data.communes[c].securite }));
+    const blocked = road.filter((x) => x.r.state === "coupe").map((x) => x.c);
+    const slow = road.filter((x) => x.r.state === "instable").map((x) => x.c);
+    const risk = road.filter((x) => x.s.state === "coupe").map((x) => x.c);
+    const known = road.filter((x) => x.r.state !== "inconnu").length;
+    let st = "inconnu", text = "Pas d'info récente sur ce trajet";
+    if (blocked.length) { st = "coupe"; text = `Route bloquée à ${blocked.join(", ")}`; }
+    else if (slow.length) { st = "instable"; text = `Embouteillages à ${slow.join(", ")}`; }
+    else if (known) { st = "ok"; text = known === chain.length ? "Ça roule sur tout le trajet" : "Ça roule là où c'est signalé"; }
+    return `
+      <div class="card pad">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline"><span style="font-weight:750">${esc(tripLabel(t))}</span></div>
+        <div style="margin-top:8px">${badge(st, text)}</div>
+        ${risk.length ? `<div style="margin-top:6px">${badge("coupe", "Sécurité : zone à risque à " + risk.join(", "))}</div>` : ""}
+        <div class="qlist" style="margin-top:10px">${road.map((x) => `<button class="qchip b-${x.r.state}" data-open="${esc(x.c)}"><i></i>${esc(x.c)}</button>`).join(`<span class="caption">→</span>`)}</div>
+      </div>`;
+  }).join("");
+  box.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openSheet(b.dataset.open)));
+}
+
 function feedItem(r) {
   const st = r.state;
   const colors = { ok: "var(--ok-bg);color:var(--ok-ink)", instable: "var(--mid-bg);color:var(--mid-ink)", coupe: "var(--bad-bg);color:var(--bad-ink)" };
   return `
     <button class="item" data-open="${esc(r.commune)}">
       <span class="feed-ico" style="background:${colors[st]}">${ico(r.service)}</span>
-      <span class="grow"><span class="name">${esc(r.commune)}</span><span class="caption" style="display:block">${esc(SERVICES[r.service].name)} · ${esc(SERVICES[r.service].states[st])}${r.kind ? " · " + esc(KINDS[r.kind]) : ""}</span></span>
+      <span class="grow"><span class="name">${r.quartier ? esc(r.quartier) + " · " : ""}${esc(r.commune)}</span><span class="caption" style="display:block">${esc(SERVICES[r.service].name)} · ${esc(SERVICES[r.service].states[st])}${r.kind ? " · " + esc(KINDS[r.kind]) : ""}</span></span>
       <span class="caption">${agoText(r.at)}</span>
     </button>`;
 }
@@ -679,7 +814,7 @@ function openSheet(name) {
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
       <div>
         <h2 class="h1" style="font-size:24px">${esc(name)}</h2>
-        <div class="caption" style="margin-top:4px">${upd ? "Dernière actualisation " + agoText(upd) : "Aucun signalement récent"}${name === state.commune ? " · chez toi" : ""}</div>
+        <div class="caption" style="margin-top:4px">${upd ? "Dernière actualisation " + agoText(upd) : "Aucun signalement récent"}${name === state.commune ? ` · chez toi${state.quartier ? " (" + esc(state.quartier) + ")" : ""}` : ""}</div>
       </div>
       <button class="icon-btn" data-close aria-label="Fermer">${ico("close")}</button>
     </div>
@@ -690,10 +825,16 @@ function openSheet(name) {
         const detail = i.state === "inconnu"
           ? "Pas de signalement récent"
           : `Depuis ${hourText(i.since)} · ${i.people} personne${i.people > 1 ? "s" : ""} · ${FRESH_LABEL[i.freshness]}`;
+        const qs = i.quartiers ? Object.entries(i.quartiers).sort((a, b) => SEVERITY[b[1].state] - SEVERITY[a[1].state]) : [];
+        const qsum = i.qstats ? quartierSummary(k, i.qstats) : "";
         return `
-          <div class="svc-row">
+          <div class="svc-row" style="align-items:flex-start">
             <span class="cat-ico">${ico(k)}</span>
-            <div class="grow"><div class="name">${esc(SERVICES[k].name)}</div><div class="caption">${esc(detail)}</div></div>
+            <div class="grow">
+              <div class="name">${esc(SERVICES[k].name)}</div><div class="caption">${esc(detail)}</div>
+              ${qsum ? `<div class="caption" style="margin-top:4px;color:var(--text);font-weight:600">${esc(qsum)}</div>` : ""}
+              ${qs.length ? `<div class="qlist">${qs.map(([q, qi]) => `<span class="qchip b-${qi.state}${name === state.commune && q === state.quartier ? " mine" : ""}"><i></i>${esc(q)} · ${esc(SERVICES[k].states[qi.state])}</span>`).join("")}</div>` : ""}
+            </div>
             <div style="text-align:right">${badge(i.state, stateText(k, i))}${i.trust ? `<div class="tag" style="margin-top:4px">${TRUST_LABEL[i.trust]}</div>` : ""}</div>
           </div>`;
       }).join("")}
@@ -713,7 +854,7 @@ function openSheet(name) {
   scrim.addEventListener("click", close);
   sheet.querySelector("[data-close]").addEventListener("click", close);
   sheet.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
-  sheet.querySelector("[data-report]").addEventListener("click", () => { state.report.commune = name; closeSheet(true); });
+  sheet.querySelector("[data-report]").addEventListener("click", () => { state.report.commune = name; state.report.quartier = undefined; closeSheet(true); });
   sheet.querySelector("[data-follow]").addEventListener("click", (e) => {
     if (state.follows.some((f) => f.name === name)) {
       if (name === state.commune) return toast("C'est ta commune : elle reste dans tes suivis.");
@@ -746,6 +887,15 @@ function openSheet(name) {
   });
 }
 
+// « Coupure dans 3 quartiers sur 8 signalés »
+function quartierSummary(k, st) {
+  const total = st.ok + st.instable + st.coupe;
+  const s = SERVICES[k].states;
+  if (st.coupe) return `${s.coupe} dans ${st.coupe} quartier${st.coupe > 1 ? "s" : ""} sur ${total} signalé${total > 1 ? "s" : ""}`;
+  if (st.instable) return `${s.instable} dans ${st.instable} quartier${st.instable > 1 ? "s" : ""} sur ${total} signalé${total > 1 ? "s" : ""}`;
+  return `${s.ok} dans ${total} quartier${total > 1 ? "s" : ""} signalé${total > 1 ? "s" : ""}`;
+}
+
 function closeSheet(instant, focusBack) {
   const sheet = document.querySelector(".sheet"), scrim = document.querySelector(".scrim");
   if (!sheet) return;
@@ -769,16 +919,19 @@ async function shareCommune(name, c) {
 function viewReport() {
   const r = state.report;
   r.commune ||= state.commune;
+  // Quartier par défaut : celui du domicile si c'est la même commune.
+  if (r.quartier === undefined) r.quartier = r.commune === state.commune ? state.quartier : null;
   if (r.sent) {
     $app.innerHTML = `
       <div class="view done">
         <div class="check">${ico("check")}</div>
         <h1 class="h1">Melesi !</h1>
-        <p class="caption" style="margin:8px 0 22px">Ton signalement pour ${esc(r.commune)} est envoyé à ${hourText(Date.now())}. Il aide tous les habitants.</p>
+        <p class="caption" style="margin:8px 0 22px">Ton signalement pour ${r.quartier ? esc(r.quartier) + ", " : ""}${esc(r.commune)} est envoyé à ${hourText(Date.now())}. Il aide tous les habitants.</p>
         <a class="btn btn-primary btn-block" href="#accueil">Voir la carte</a>
         <button class="btn btn-ghost btn-block" id="again" style="margin-top:8px">Faire un autre signalement</button>
       </div>`;
     document.getElementById("again").addEventListener("click", () => { r.sent = false; r.state = null; r.kind = null; viewReport(); });
+    r.commune = null; r.quartier = undefined;
     return;
   }
   const s = SERVICES[r.service];
@@ -797,6 +950,11 @@ function viewReport() {
         <select class="select" id="commune">${COMMUNES.map((c) => `<option ${c === r.commune ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
         <button class="icon-btn" id="gps" style="flex:0 0 50px;width:50px;height:50px;border-radius:14px" aria-label="Me localiser">${ico("locate")}</button>
       </div>
+
+      <div class="overline" style="margin-bottom:8px">Quartier</div>
+      <button class="select" id="qbtn" style="text-align:left;display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+        <span>${r.quartier ? esc(r.quartier) : `<span style="color:var(--muted)">Choisir le quartier (conseillé)</span>`}</span>${ico("chev")}
+      </button>
 
       <div class="overline" style="margin-bottom:8px">Catégorie</div>
       <div class="services">
@@ -817,17 +975,27 @@ function viewReport() {
 
       <div class="card pad" style="margin-top:22px" id="recap" ${r.state ? "" : "hidden"}>
         <div class="overline">Vérifie avant d'envoyer</div>
-        <div style="margin-top:8px;font-weight:700">${esc(r.commune)} · ${esc(s.name)}</div>
+        <div style="margin-top:8px;font-weight:700">${r.quartier ? esc(r.quartier) + ", " : ""}${esc(r.commune)} · ${esc(s.name)}</div>
         <div style="margin-top:6px">${r.state ? badge(r.state, s.states[r.state] + (r.kind ? " · " + KINDS[r.kind] : "")) : ""}</div>
       </div>
       <button class="btn btn-primary btn-block" id="send" style="margin-top:14px" ${r.state ? "" : "disabled"}>Envoyer le signalement</button>
       <p class="caption" style="text-align:center;margin-top:10px">Un signalement toutes les 10 minutes par commune et par catégorie.</p>
     </div>`;
 
-  document.getElementById("commune").addEventListener("change", (e) => { r.commune = e.target.value; viewReport(); });
+  document.getElementById("commune").addEventListener("change", (e) => { r.commune = e.target.value; r.quartier = undefined; viewReport(); });
+  document.getElementById("qbtn").addEventListener("click", () => {
+    $app.innerHTML = `
+      <div class="view">
+        <div class="top"><button class="icon-btn" id="qback" aria-label="Retour">${ico("back")}</button><span class="caption">${esc(r.commune)}</span></div>
+        <h1 class="h1" style="margin:10px 0 14px">Quel quartier ?</h1>
+        <div id="picker"></div>
+      </div>`;
+    document.getElementById("qback").addEventListener("click", viewReport);
+    quartierPicker(document.getElementById("picker"), r.commune, r.quartier, (q) => { r.quartier = q; viewReport(); }, { skipLabel: "Je ne connais pas le quartier" });
+  });
   document.getElementById("gps").addEventListener("click", async (e) => {
     const b = e.currentTarget; b.classList.add("loading");
-    try { r.commune = await locate(); viewReport(); toast(`Commune détectée : ${r.commune}`); }
+    try { r.commune = await locate(); r.quartier = undefined; viewReport(); toast(`Commune détectée : ${r.commune}. Choisis le quartier.`); }
     catch (err) { b.classList.remove("loading"); toast(err.message); }
   });
   $app.querySelectorAll("[data-svc]").forEach((b) => b.addEventListener("click", () => { r.service = b.dataset.svc; r.state = null; r.kind = null; viewReport(); }));
@@ -845,10 +1013,10 @@ function viewReport() {
 }
 
 // ---------- Suivis ----------
-async function viewFollows() {
+async function viewFollows(sub) {
   $app.innerHTML = `
     <div class="view">
-      ${header("Suivis", "Tes communes et celles de tes proches")}
+      ${header("Suivis", "Tes communes, tes proches, tes trajets")}
       <div id="follows" class="stack" style="margin-top:16px">${[1, 2, 3].map(() => `<div class="card sk" style="height:76px"></div>`).join("")}</div>
       <section class="section">
         <label class="overline" for="add">Ajouter une zone</label>
@@ -857,8 +1025,24 @@ async function viewFollows() {
           ${COMMUNES.filter((c) => !state.follows.some((f) => f.name === c)).map((c) => `<option>${esc(c)}</option>`).join("")}
         </select>
       </section>
-      <p class="caption" style="margin-top:14px">Tes suivis restent sur ce téléphone. Les notifications arriveront dans une prochaine version.</p>
+      <section class="section" id="trajets">
+        <h2 class="h2">Mes trajets</h2>
+        <p class="caption" style="margin:4px 0 10px">Ezali? te montre l'état de la route sur tes trajets habituels, sur l'accueil.</p>
+        <div id="triplist" class="stack"></div>
+        <div class="card pad stack" style="margin-top:10px">
+          <div class="overline">Nouveau trajet</div>
+          <input class="select" id="tname" maxlength="24" placeholder="Nom (facultatif) : Travail, École…">
+          <div class="row"><select class="select" id="tfrom" aria-label="Départ">${COMMUNES.map((c) => `<option ${c === state.commune ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
+          <select class="select" id="tto" aria-label="Arrivée"><option value="">Arrivée…</option>${COMMUNES.map((c) => `<option>${esc(c)}</option>`).join("")}</select></div>
+          <select class="select" id="tvia" aria-label="Ajouter une commune traversée"><option value="">+ Commune traversée (facultatif)</option>${COMMUNES.map((c) => `<option>${esc(c)}</option>`).join("")}</select>
+          <div class="qlist" id="tvias"></div>
+          <button class="btn btn-primary" id="tadd">Enregistrer le trajet</button>
+        </div>
+      </section>
+      <p class="caption" style="margin-top:14px">Tes suivis et trajets restent sur ce téléphone. Les notifications arriveront dans une prochaine version.</p>
     </div>`;
+  setupTrips();
+  if (sub === "trajet") document.getElementById("trajets").scrollIntoView({ block: "start" });
   document.getElementById("add").addEventListener("change", (e) => {
     if (!e.target.value) return;
     state.follows.push({ name: e.target.value, group: "proche" });
@@ -925,6 +1109,36 @@ async function viewFollows() {
     toast(`${f.name} : ${f.group === "proche" ? "Mes proches" : "Autres zones"}`);
     save();
   }));
+}
+
+function setupTrips() {
+  const via = [];
+  const list = document.getElementById("triplist");
+  list.innerHTML = state.trips.length
+    ? state.trips.map((t, i) => `<div class="card zone"><div class="grow"><div class="name" style="font-weight:700">${esc(tripLabel(t))}</div>${t.via && t.via.length ? `<div class="caption">Par ${esc(t.via.join(", "))}</div>` : ""}</div><div class="zone-tools"><button class="icon-btn" data-tdel="${i}" aria-label="Supprimer le trajet ${esc(tripLabel(t))}">${ico("close")}</button></div></div>`).join("")
+    : `<div class="card pad caption">Aucun trajet pour l'instant.</div>`;
+  list.querySelectorAll("[data-tdel]").forEach((b) => b.addEventListener("click", () => {
+    state.trips.splice(+b.dataset.tdel, 1); store.set("trips", state.trips); setupTrips();
+  }));
+  const vias = document.getElementById("tvias");
+  const drawVias = () => {
+    vias.innerHTML = via.map((c, i) => `<button class="qchip b-inconnu" data-vdel="${i}" aria-label="Retirer ${esc(c)}"><i></i>${esc(c)} ✕</button>`).join("");
+    vias.querySelectorAll("[data-vdel]").forEach((b) => b.addEventListener("click", () => { via.splice(+b.dataset.vdel, 1); drawVias(); }));
+  };
+  document.getElementById("tvia").addEventListener("change", (e) => {
+    if (e.target.value && via.length < 4 && !via.includes(e.target.value)) via.push(e.target.value);
+    e.target.value = ""; drawVias();
+  });
+  document.getElementById("tadd").addEventListener("click", () => {
+    const from = document.getElementById("tfrom").value, to = document.getElementById("tto").value;
+    if (!to) return toast("Choisis l'arrivée.");
+    if (to === from && !via.length) return toast("Le départ et l'arrivée sont identiques.");
+    if (state.trips.length >= 5) return toast("5 trajets maximum.");
+    state.trips.push({ name: document.getElementById("tname").value.trim().slice(0, 24), from, to, via: via.filter((c) => c !== from && c !== to) });
+    store.set("trips", state.trips);
+    toast("Trajet enregistré. Tu le verras sur l'accueil.");
+    viewFollows("trajet");
+  });
 }
 
 // ---------- Classement ----------
@@ -1006,7 +1220,9 @@ function viewProfile(sub) {
         <div class="item"><span class="grow"><span class="name">Langue</span><span class="caption" style="display:block">Français</span></span></div>
         <div class="item" id="notifications"><span class="grow"><span class="name">Notifications</span><span class="caption" style="display:block">Bientôt disponibles : retour du courant, coupure d'eau… dans les communes de ton choix.</span></span></div>
         <a class="item" href="#suivis"><span class="grow"><span class="name">Communes suivies</span><span class="caption" style="display:block">${state.follows.length} commune${state.follows.length > 1 ? "s" : ""}</span></span>${ico("chev")}</a>
-        <a class="item" href="#commune"><span class="grow"><span class="name">Ma commune</span><span class="caption" style="display:block">${esc(state.commune)}</span></span>${ico("chev")}</a>
+        <a class="item" href="#commune"><span class="grow"><span class="name">Domicile</span><span class="caption" style="display:block">${esc(homeLabel())}</span></span>${ico("chev")}</a>
+        <a class="item" href="#quartier"><span class="grow"><span class="name">Mon quartier</span><span class="caption" style="display:block">${state.quartier ? esc(state.quartier) : "Pas encore choisi"}</span></span>${ico("chev")}</a>
+        <button class="item" id="road" role="switch" aria-checked="${state.roadPrompt}"><span class="grow"><span class="name">Me proposer de signaler quand je suis en route</span><span class="caption" style="display:block">Quand l'app est ouverte et que tu te déplaces vite, Ezali? te demande comment ça roule. Utilise la localisation.</span></span><span class="switch" aria-hidden="true"></span></button>
       </div>
 
       <div class="overline" style="margin:22px 2px 8px">Confidentialité</div>
@@ -1031,6 +1247,17 @@ function viewProfile(sub) {
     state.theme = b.dataset.themeSet; store.set("theme", state.theme); applyTheme();
     $app.querySelectorAll("[data-theme-set]").forEach((x) => x.setAttribute("aria-pressed", x === b));
   }));
+  document.getElementById("road").addEventListener("click", async (e) => {
+    const b = e.currentTarget;
+    if (!state.roadPrompt) {
+      try { await locate(); } catch (err) { if (/refus/.test(err.message)) return toast(err.message); }
+    }
+    state.roadPrompt = !state.roadPrompt;
+    store.set("roadPrompt", state.roadPrompt);
+    b.setAttribute("aria-checked", state.roadPrompt);
+    road.sync();
+    toast(state.roadPrompt ? "Activé : Ezali? te demandera comment ça roule quand tu seras en route." : "Désactivé.");
+  });
   document.getElementById("loc").addEventListener("click", async () => {
     try { const name = await locate(); toast(`Tu sembles être à ${name}.`); }
     catch (err) { toast(err.message); }
@@ -1104,6 +1331,75 @@ function viewPage(key) {
 }
 
 // =========================================================
+// « Tu es en route ? » (seulement si activé, et quand l'app est ouverte)
+// La position sert à calculer la vitesse et la commune, sur le téléphone. Elle n'est pas envoyée.
+// =========================================================
+const road = {
+  watch: null, last: null, fast: 0,
+  sync() {
+    const want = state.roadPrompt && state.commune && document.visibilityState === "visible" && navigator.geolocation;
+    if (want && this.watch === null) {
+      this.watch = navigator.geolocation.watchPosition((p) => this.onPos(p), () => {}, { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
+    } else if (!want && this.watch !== null) {
+      navigator.geolocation.clearWatch(this.watch);
+      this.watch = null; this.last = null; this.fast = 0;
+    }
+  },
+  onPos(p) {
+    const { latitude: lat, longitude: lon, accuracy } = p.coords;
+    let v = p.coords.speed; // m/s, parfois absent
+    if ((v === null || v === undefined) && this.last) {
+      const dt = (p.timestamp - this.last.t) / 1000;
+      if (dt >= 5) {
+        const R = 6371000, toR = Math.PI / 180;
+        const dLat = (lat - this.last.lat) * toR, dLon = (lon - this.last.lon) * toR;
+        const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat * toR) * Math.cos(this.last.lat * toR) * Math.sin(dLon / 2) ** 2;
+        v = (2 * R * Math.asin(Math.sqrt(a))) / dt;
+      }
+    }
+    if (!this.last || p.timestamp - this.last.t >= 5000) this.last = { t: p.timestamp, lat, lon };
+    if (v === null || v === undefined || accuracy > 100) return;
+    this.fast = v >= 4.2 ? this.fast + 1 : v < 1.5 ? 0 : this.fast; // 4,2 m/s ≈ 15 km/h
+    const lastShown = store.get("roadShownAt", 0);
+    if (this.fast >= 2 && Date.now() - lastShown > 20 * 60e3 && !document.querySelector(".sheet, .roadbar")) this.show(lat, lon);
+  },
+  async show(lat, lon) {
+    let commune;
+    try { commune = communeAt(await getShapes(), lat, lon); } catch { return; }
+    if (!commune) return;
+    store.set("roadShownAt", Date.now());
+    const bar = document.createElement("section");
+    bar.className = "roadbar card";
+    bar.setAttribute("role", "dialog");
+    bar.setAttribute("aria-label", "Tu es en route ?");
+    bar.innerHTML = `
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+        <div><div style="font-weight:800;font-size:16px">Tu es en route à ${esc(commune)} ?</div>
+        <div class="caption" style="margin-top:2px">Ça roule comment ? Si tu conduis, ne touche pas ton téléphone.</div></div>
+        <button class="icon-btn" data-x aria-label="Fermer" style="width:36px;height:36px">${ico("close")}</button>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn btn-secondary" data-r="ok"><i class="dotc" style="background:var(--ok)"></i>Fluide</button>
+        <button class="btn btn-secondary" data-r="instable"><i class="dotc" style="background:var(--mid)"></i>Bouchon</button>
+        <button class="btn btn-secondary" data-r="coupe"><i class="dotc" style="background:var(--bad)"></i>Bloqué</button>
+      </div>`;
+    document.body.append(bar);
+    const close = () => bar.remove();
+    const timer = setTimeout(close, 2 * 60e3);
+    bar.querySelector("[data-x]").addEventListener("click", () => { clearTimeout(timer); close(); });
+    bar.querySelectorAll("[data-r]").forEach((b) => b.addEventListener("click", async () => {
+      b.classList.add("loading");
+      try {
+        await sendReport({ commune, quartier: null, service: "routes", state: b.dataset.r });
+        clearTimeout(timer); close();
+        toast(`Melesi ! Circulation signalée à ${commune}.`);
+      } catch (err) { b.classList.remove("loading"); toast(err.message); }
+    }));
+  },
+};
+document.addEventListener("visibilitychange", () => road.sync());
+
+// =========================================================
 // Navigation
 // =========================================================
 function route() {
@@ -1116,6 +1412,11 @@ function route() {
     viewChooseCommune(!!state.commune);
     return;
   }
+  if (!state.quartierSet || tab === "quartier") {
+    bar.hidden = true;
+    viewChooseQuartier();
+    return;
+  }
   bar.hidden = false;
   bar.querySelectorAll("[data-tab]").forEach((a) => {
     const on = a.dataset.tab === (tab || "accueil");
@@ -1125,7 +1426,7 @@ function route() {
   window.scrollTo(0, 0);
 
   if (tab === "signaler") viewReport();
-  else if (tab === "suivis") viewFollows();
+  else if (tab === "suivis") viewFollows(arg);
   else if (tab === "classement") viewRanking();
   else if (tab === "profil") viewProfile(arg);
   else viewHome();
@@ -1152,6 +1453,7 @@ window.addEventListener("resize", () => map.place());
 
 applyTheme();
 if (!handleDeepLink()) route();
+road.sync();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
