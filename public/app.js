@@ -4,7 +4,7 @@
    Pas de compte, pas de bibliothèque : tout tient dans ce fichier.
    ========================================================= */
 
-const VERSION = "1.4.0";
+const VERSION = "1.4.1";
 const TAGLINE = "Kinshasa en direct";
 
 // ---------- Données fixes ----------
@@ -298,7 +298,10 @@ function locate() {
           resolve(name);
         } catch { reject(new Error("Carte indisponible pour le moment.")); }
       },
-      () => reject(new Error("Localisation refusée ou indisponible.")),
+      (err) => reject(new Error(
+        err.code === 1 ? "Localisation refusée. Autorise-la pour ce site dans les réglages de ton navigateur (icône à gauche de l'adresse), puis réessaie."
+        : err.code === 3 ? "La localisation met trop de temps. Vérifie que le GPS est activé, puis réessaie."
+        : "Position introuvable. Vérifie que le GPS (localisation) de ton téléphone est activé.")),
       { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 }
     );
   });
@@ -1372,7 +1375,8 @@ function viewProfile(sub) {
   document.getElementById("road").addEventListener("click", async (e) => {
     const b = e.currentTarget;
     if (!state.roadPrompt) {
-      try { await locate(); } catch (err) { if (/refus/.test(err.message)) return toast(err.message); }
+      try { await locate(); }
+      catch (err) { if (!/hors de Kinshasa/.test(err.message)) return toast(err.message); }
     }
     state.roadPrompt = !state.roadPrompt;
     store.set("roadPrompt", state.roadPrompt);
