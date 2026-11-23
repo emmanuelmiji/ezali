@@ -1,13 +1,13 @@
 {
   "name": "Ezali? · Courant, eau, routes, réseau",
   "short_name": "Ezali?",
-  "description": "Courant, eau, routes et réseau en direct, commune par commune, signalés par les Kinois.",
+  "description": "Courant, eau, circulation, réseau et sécurité dans les 24 communes de Kinshasa, signalés en direct par les habitants.",
   "lang": "fr",
   "start_url": "/#accueil",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#0A1530",
-  "theme_color": "#0A1530",
+  "background_color": "#F5F7FA",
+  "theme_color": "#102A43",
   "icons": [
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
