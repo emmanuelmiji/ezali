@@ -15,3 +15,11 @@ CREATE INDEX IF NOT EXISTS idx_reports_recent ON reports (service, created_at);
 CREATE INDEX IF NOT EXISTS idx_reports_commune ON reports (commune, service, created_at);
 CREATE INDEX IF NOT EXISTS idx_reports_device ON reports (device, commune, service, created_at);
 CREATE INDEX IF NOT EXISTS idx_reports_quartier ON reports (commune, quartier, service, created_at);
+CREATE TABLE IF NOT EXISTS places (
+  device TEXT NOT NULL,
+  slot TEXT NOT NULL CHECK (slot IN ('home', 'work')),
+  commune TEXT NOT NULL,
+  quartier TEXT,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (device, slot)
+);
