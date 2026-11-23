@@ -6,9 +6,12 @@ CREATE TABLE IF NOT EXISTS reports (
   state TEXT NOT NULL CHECK (state IN ('ok','instable','coupe')),
   kind TEXT CHECK (kind IS NULL OR kind IN ('insecurite','accident','inondation','autre')),
   device TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  quartier TEXT,
+  quartier_custom INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_reports_recent ON reports (service, created_at);
 CREATE INDEX IF NOT EXISTS idx_reports_commune ON reports (commune, service, created_at);
 CREATE INDEX IF NOT EXISTS idx_reports_device ON reports (device, commune, service, created_at);
+CREATE INDEX IF NOT EXISTS idx_reports_quartier ON reports (commune, quartier, service, created_at);
