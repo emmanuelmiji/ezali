@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Ezali? · Savoir ce qui se passe, avant de sortir</title>
-  <meta name="description" content="Courant, eau, routes, réseau et sécurité dans les 24 communes de Kinshasa, signalés en direct par les habitants.">
+  <title>Ezali? · Kinshasa en direct</title>
+  <meta name="description" content="Ezali? · Kinshasa en direct. Courant, eau, circulation, réseau et sécurité dans ton quartier, signalés par les habitants.">
   <meta name="theme-color" content="#F5F7FA">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
@@ -23,6 +23,18 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+  <!-- Écran de lancement : affiché tout de suite, avant le chargement de l'app -->
+  <div id="splash" role="img" aria-label="Ezali? · Kinshasa en direct">
+    <div class="sp-center">
+      <div class="sp-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></div>
+      <div class="sp-name">Ezali<b>?</b></div>
+      <div class="sp-tag">Kinshasa en direct</div>
+    </div>
+    <div class="sp-foot">
+      <div class="sp-flag" aria-hidden="true"><span></span><span></span><span></span></div>
+      Fait à Kinshasa · RDC
+    </div>
+  </div>
   <div class="flag" aria-hidden="true"><span></span><span></span><span></span></div>
   <main id="app"></main>
 

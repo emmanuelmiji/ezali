@@ -4,7 +4,8 @@
    Pas de compte, pas de bibliothèque : tout tient dans ce fichier.
    ========================================================= */
 
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
+const TAGLINE = "Kinshasa en direct";
 
 // ---------- Données fixes ----------
 const COMMUNES = [
@@ -86,6 +87,8 @@ const state = {
   quartierSet: store.get("quartierSet", false), // l'utilisateur a choisi (ou passé) son quartier
   trips: store.get("trips", []),                // trajets habituels
   roadPrompt: store.get("roadPrompt", false),   // proposer un signalement quand on roule
+  toured: store.get("toured", false),           // visite guidée vue
+  tipsDone: store.get("tipsDone", []),          // astuces déjà lues
   follows: loadFollows(),
   theme: store.get("theme", "auto"),
   filter: "tout",
@@ -326,6 +329,106 @@ function errorBox(msg, retryId) {
   return `<div class="card pad empty">${esc(msg)}<div style="margin-top:12px"><button class="btn btn-secondary" id="${retryId}">${ico("refresh")}Réessayer</button></div></div>`;
 }
 
+// ---------- Visite guidée (premier lancement, puis Profil › Comment ça marche) ----------
+const ART = {
+  home: `<svg viewBox="0 0 300 220" aria-hidden="true">
+    <circle cx="150" cy="115" r="100" style="fill:var(--surface-2)"/>
+    <path d="M85 120 150 68l65 52v62a6 6 0 0 1-6 6H91a6 6 0 0 1-6-6z" style="fill:var(--night)"/>
+    <rect x="132" y="138" width="36" height="50" rx="4" style="fill:var(--primary)"/>
+    <rect x="102" y="126" width="22" height="22" rx="3" fill="#F7D618"/><rect x="176" y="126" width="22" height="22" rx="3" fill="#F7D618"/>
+    <circle cx="232" cy="72" r="26" style="fill:var(--ok)"/><path d="M236 56 224 75h9l-2 13 12-19h-9z" fill="#fff"/>
+    <circle cx="70" cy="76" r="22" style="fill:var(--primary)"/><path d="M70 62s9 10 9 16a9 9 0 0 1-18 0c0-6 9-16 9-16z" fill="#fff"/>
+  </svg>`,
+  map: `<svg viewBox="0 0 300 220" aria-hidden="true">
+    <circle cx="150" cy="115" r="100" style="fill:var(--surface-2)"/>
+    <path d="M62 92l48-22 30 18-8 42-46 10-30-20z" style="fill:var(--ok)"/>
+    <path d="M140 88l52-16 34 30-14 40-48-6-32-6z" style="fill:var(--mid)"/>
+    <path d="M86 140l46-10 50 6 4 34-56 14-40-14z" style="fill:var(--bad)"/>
+    <g style="stroke:var(--surface-2)" class="ln"><path d="M110 70l30 18M140 88l-8 42M132 130l50 6M140 88l52-16"/></g>
+    <path d="M190 52c-14 0-24 10-24 23 0 17 24 37 24 37s24-20 24-37c0-13-10-23-24-23z" style="fill:var(--night)"/><circle cx="190" cy="75" r="8" fill="#F7D618"/>
+  </svg>`,
+  report: `<svg viewBox="0 0 300 220" aria-hidden="true">
+    <circle cx="150" cy="115" r="100" style="fill:var(--surface-2)"/>
+    <circle cx="150" cy="110" r="62" style="fill:var(--primary);opacity:.16"/>
+    <circle cx="150" cy="110" r="44" style="fill:var(--primary)"/>
+    <path d="M150 88v44M128 110h44" stroke="#fff" stroke-width="9" stroke-linecap="round" fill="none"/>
+    <circle cx="226" cy="62" r="24" style="fill:var(--ok)"/><path d="M215 62l8 8 14-15" stroke="#fff" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="150" y="200" text-anchor="middle" font-size="20" font-weight="800" style="fill:var(--text)">2 secondes</text>
+  </svg>`,
+  trust: `<svg viewBox="0 0 300 220" aria-hidden="true">
+    <circle cx="150" cy="115" r="100" style="fill:var(--surface-2)"/>
+    <path d="M150 40 92 62v44c0 38 25 62 58 72 33-10 58-34 58-72V62z" style="fill:var(--night)"/>
+    <path d="M124 110l18 18 34-36" stroke="#F7D618" stroke-width="10" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="64" cy="150" r="14" style="fill:var(--primary)"/><circle cx="236" cy="150" r="14" style="fill:var(--primary)"/><circle cx="236" cy="78" r="10" style="fill:var(--ok)"/><circle cx="62" cy="84" r="10" style="fill:var(--mid)"/>
+  </svg>`,
+};
+const SLIDES = [
+  { art: "home", ln: "Courant ezali ? Mai ezali ?", title: "Sache ce qui se passe chez toi", text: "Courant, eau, circulation, réseau et sécurité : Ezali? te montre la situation de ton quartier, en direct." },
+  { art: "map", ln: "Tala carte", title: "Un coup d'œil sur la carte", text: "Vert : ça va. Orange : c'est perturbé. Rouge : c'est coupé ou bloqué. Touche une commune pour voir chaque quartier." },
+  { art: "report", ln: "Yebisa basusu", title: "Préviens les autres", text: "Touche le bouton +, choisis ce qui se passe, envoie. Plus il y a de signalements, plus l'info est fiable." },
+  { art: "trust", ln: "Gratuit · Anonyme", title: "Gratuit et anonyme", text: "Pas de compte, pas de nom, pas de numéro. Ta position reste sur ton téléphone. Ezali? ne remplace pas les secours." },
+];
+
+function viewTour(replay) {
+  let i = 0;
+  const draw = () => {
+    const sl = SLIDES[i], last = i === SLIDES.length - 1;
+    $app.innerHTML = `
+      <div class="view tour">
+        <button class="btn btn-ghost tour-skip" id="skip" style="color:var(--muted)">${last ? "" : "Passer"}</button>
+        <div class="tour-art slide">${ART[sl.art]}</div>
+        <div class="slide">
+          <div class="ln-fr">${esc(sl.ln)}</div>
+          <h1>${esc(sl.title)}</h1>
+          <p>${esc(sl.text)}</p>
+        </div>
+        <div class="dots" aria-hidden="true">${SLIDES.map((_, j) => `<i class="${j === i ? "on" : ""}"></i>`).join("")}</div>
+        <button class="btn btn-primary btn-block" id="next">${last ? (replay ? "J'ai compris" : "Commencer") : "Suivant"}</button>
+        <p class="caption" style="text-align:center;margin-top:12px">Étape ${i + 1} sur ${SLIDES.length}</p>
+      </div>`;
+    const done = () => { state.toured = true; store.set("toured", true); location.hash = replay ? "#accueil" : "#commune"; route(); };
+    document.getElementById("next").addEventListener("click", () => { if (last) done(); else { i++; draw(); } });
+    const skip = document.getElementById("skip");
+    if (last) skip.style.visibility = "hidden"; else skip.addEventListener("click", done);
+    // Glisser à gauche / à droite
+    let x0 = null;
+    $app.querySelector(".tour").addEventListener("touchstart", (e) => { x0 = e.touches[0].clientX; }, { passive: true });
+    $app.querySelector(".tour").addEventListener("touchend", (e) => {
+      if (x0 === null) return;
+      const dx = e.changedTouches[0].clientX - x0; x0 = null;
+      if (dx < -50 && !last) { i++; draw(); } else if (dx > 50 && i > 0) { i--; draw(); }
+    });
+  };
+  draw();
+}
+
+const TIPS = [
+  { id: "map", icon: "search", text: "Touche une commune sur la carte pour voir l'état de chaque quartier." },
+  { id: "trip", icon: "locate", text: "Ajoute ton trajet habituel : avant de sortir, tu sauras si ça roule.", href: "#suivis/trajet", cta: "Ajouter" },
+  { id: "family", icon: "star", text: "Suis la commune de tes proches pour savoir s'ils ont le courant ou l'eau.", href: "#suivis", cta: "Suivis" },
+  { id: "report", icon: "plus", text: "Une info fausse ou ancienne ? Signale ce que tu vois avec le bouton +.", href: "#signaler", cta: "Signaler" },
+];
+function tipCard() {
+  const t = TIPS.find((x) => !state.tipsDone.includes(x.id));
+  if (!t) return "";
+  return `
+    <div class="card tip" id="tip" style="margin-top:14px">
+      <span class="tip-ico">${ico(t.icon)}</span>
+      <div style="flex:1">
+        <div class="overline" style="color:var(--primary)">Astuce</div>
+        <div style="margin-top:4px;font-size:15px;line-height:1.4">${esc(t.text)}</div>
+        <div class="row" style="margin-top:10px;justify-content:flex-start">
+          ${t.href ? `<a class="btn btn-primary" href="${t.href}" data-tipdone="${t.id}" style="flex:0 0 auto;height:40px">${esc(t.cta)}</a>` : ""}
+          <button class="btn btn-secondary" data-tipdone="${t.id}" style="flex:0 0 auto;height:40px">Compris</button>
+        </div>
+      </div>
+    </div>`;
+}
+function greeting() {
+  const h = new Date().getHours();
+  return h < 12 ? "Mbote, bonjour !" : h < 18 ? "Mbote, bon après-midi !" : "Mbote, bonsoir !";
+}
+
 // ---------- Choix de la commune (premier lancement) ----------
 function viewChooseCommune(fromProfile) {
   $app.innerHTML = `
@@ -391,8 +494,11 @@ function viewChooseQuartier() {
 function viewHome() {
   $app.innerHTML = `
     <div class="view">
-      ${header(null, "Kinshasa · 24 communes")}
+      ${header(null, TAGLINE)}
       <div id="home-notice"></div>
+      <div class="hello">${greeting()}</div>
+      <div class="caption">Voici ce qui se passe à Kinshasa${state.quartier ? ` et à ${esc(state.quartier)}` : ""}.</div>
+      ${tipCard()}
 
       <section class="section" style="margin-top:16px">
         <div class="section-head" style="margin-bottom:2px">
@@ -451,7 +557,7 @@ function viewHome() {
         <div class="card list" id="feed"><div class="sk" style="height:120px;margin:12px 0"></div></div>
       </section>
 
-      <p class="caption" style="margin-top:20px;text-align:center">Informations signalées par les habitants, pas des données officielles.<br>Contours des communes © OpenStreetMap.</p>
+      <p class="caption" style="margin-top:24px;text-align:center"><b style="color:var(--text)">Ezali? · ${TAGLINE}</b><br>Informations signalées par les habitants, pas des données officielles.<br>Contours des communes © OpenStreetMap.</p>
     </div>`;
 
   $app.querySelectorAll("[data-filter]").forEach((b) => b.addEventListener("click", () => {
@@ -460,6 +566,10 @@ function viewHome() {
     map.paint();
   }));
   document.getElementById("refresh").addEventListener("click", (e) => { e.currentTarget.classList.add("spin"); loadHome(true); });
+  $app.querySelectorAll("[data-tipdone]").forEach((b) => b.addEventListener("click", () => {
+    state.tipsDone.push(b.dataset.tipdone); store.set("tipsDone", state.tipsDone);
+    const tip = document.getElementById("tip"); if (tip) tip.remove();
+  }));
   document.getElementById("mine").addEventListener("click", () => openSheet(state.commune));
   document.getElementById("near").addEventListener("click", async (e) => {
     const b = e.currentTarget; b.classList.add("loading");
@@ -1235,11 +1345,12 @@ function viewProfile(sub) {
       <div class="overline" style="margin:22px 2px 8px">Application</div>
       <div class="card list">
         <div class="item"><span class="grow"><span class="name">Version</span></span><span class="caption">${VERSION}</span></div>
+        <a class="item" href="#bienvenue"><span class="grow"><span class="name">Comment ça marche</span><span class="caption" style="display:block">Revoir la visite guidée</span></span>${ico("chev")}</a>
         <a class="item" href="#profil/aide"><span class="grow"><span class="name">Centre d'aide</span></span>${ico("chev")}</a>
         <a class="item" href="#profil/conditions"><span class="grow"><span class="name">Conditions d'utilisation</span></span>${ico("chev")}</a>
         <a class="item" href="#profil/confidentialite"><span class="grow"><span class="name">Politique de confidentialité</span></span>${ico("chev")}</a>
       </div>
-      <p class="caption" style="text-align:center;margin-top:18px">Ezali? — Savoir ce qui se passe, avant de sortir.</p>
+      <p class="caption" style="text-align:center;margin-top:18px"><b style="color:var(--text)">Ezali? · ${TAGLINE}</b><br>Fait à Kinshasa · RDC</p>
     </div>`;
 
   if (sub === "notifications") document.getElementById("notifications").scrollIntoView({ block: "center" });
@@ -1407,6 +1518,11 @@ function route() {
   const [tab, arg] = (location.hash || "#accueil").slice(1).split("/");
   const bar = document.getElementById("tabbar");
 
+  if (!state.toured || tab === "bienvenue") {
+    bar.hidden = true;
+    viewTour(state.toured);
+    return;
+  }
   if (!state.commune || tab === "commune") {
     bar.hidden = true;
     viewChooseCommune(!!state.commune);
@@ -1454,6 +1570,15 @@ window.addEventListener("resize", () => map.place());
 applyTheme();
 if (!handleDeepLink()) route();
 road.sync();
+
+(function hideSplash() {
+  const el = document.getElementById("splash");
+  if (!el) return;
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const shown = performance.now();
+  const min = reduce ? 300 : 1100;
+  setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 400); }, Math.max(0, min - shown));
+})();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
