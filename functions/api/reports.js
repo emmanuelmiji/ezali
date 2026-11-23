@@ -1,5 +1,5 @@
-// POST /api/reports  { commune, service, state, device }
-import { COMMUNES, SERVICES, STATES, json } from "../../lib/shared.js";
+// POST /api/reports  { commune, service, state, device, kind? }
+import { COMMUNES, SERVICES, STATES, KINDS, json } from "../../lib/shared.js";
 
 const COOLDOWN_MS = 10 * 60 * 1000; // 1 signalement / 10 min / appareil / commune / service
 
@@ -8,6 +8,8 @@ export async function onRequestPost({ request, env }) {
   try { body = await request.json(); } catch { return json({ error: "JSON invalide" }, 400); }
 
   const { commune, service, state, device } = body || {};
+  // "kind" seulement pour la sécurité, et seulement si ce n'est pas calme
+  const kind = service === "securite" && state !== "ok" && KINDS.includes(body.kind) ? body.kind : null;
   if (!COMMUNES.includes(commune)) return json({ error: "Commune inconnue" }, 400);
   if (!SERVICES.includes(service)) return json({ error: "Service inconnu" }, 400);
   if (!STATES.includes(state)) return json({ error: "État inconnu" }, 400);
@@ -30,8 +32,8 @@ export async function onRequestPost({ request, env }) {
   }
 
   await env.DB.prepare(
-    "INSERT INTO reports (commune, service, state, device, created_at) VALUES (?, ?, ?, ?, ?)"
-  ).bind(commune, service, state, deviceKey, now).run();
+    "INSERT INTO reports (commune, service, state, kind, device, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+  ).bind(commune, service, state, kind, deviceKey, now).run();
 
   return json({ ok: true });
 }

@@ -13,7 +13,7 @@ export async function onRequestGet({ request, env }) {
 
   const now = Date.now();
   const { results } = await env.DB.prepare(
-    "SELECT commune, state, created_at FROM reports WHERE service = ? AND created_at > ? ORDER BY created_at ASC"
+    "SELECT commune, state, kind, created_at FROM reports WHERE service = ? AND created_at > ? ORDER BY created_at ASC"
   ).bind(service, now - WINDOW_MS).all();
 
   const byCommune = {};
@@ -34,9 +34,15 @@ export async function onRequestGet({ request, env }) {
     for (const r of reports) if (r.state !== state) since = r.created_at;
     const firstOfState = reports.find((r) => r.state === state && r.created_at >= since);
 
+    // Pour la sécurité : la précision la plus signalée pour cet état
+    const kinds = {};
+    for (const r of reports) if (r.state === state && r.kind) kinds[r.kind] = (kinds[r.kind] || 0) + 1;
+    const kind = Object.keys(kinds).sort((a, b) => kinds[b] - kinds[a])[0] || null;
+
     return {
       commune: name,
       state,
+      kind,
       count: reports.filter((r) => r.state === state).length,
       since: firstOfState ? firstOfState.created_at : since,
       last: reports[reports.length - 1].created_at,
